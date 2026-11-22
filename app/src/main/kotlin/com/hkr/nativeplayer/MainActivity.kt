@@ -2,6 +2,8 @@ package com.hkr.nativeplayer
 
 import android.Manifest
 import android.content.ContentUris
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -11,9 +13,12 @@ import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.MediaStore
+import android.provider.Settings
 import android.util.LruCache
 import android.view.GestureDetector
 import android.view.Gravity
@@ -21,69 +26,156 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.MediaController
+import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 import android.widget.VideoView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import java.io.File
 import java.util.concurrent.Executors
 
-data class VideoItem(
+data class MediaEntry(
     val title: String,
     val uri: Uri,
-    val albumName: String,
-    val durationMs: Long
+    val folderName: String,
+    val filePath: String?,
+    val durationMs: Long,
+    val qualityTag: String,
+    val isAudio: Boolean
 )
 
 class MainActivity : AppCompatActivity() {
 
+    private val prefs by lazy { getSharedPreferences("hkr_player_prefs", Context.MODE_PRIVATE) }
+
+    // Onboarding Views
+    private lateinit var onboardingOverlay: LinearLayout
+    private lateinit var onboardTitle: TextView
+    private lateinit var onboardDesc: TextView
+    private lateinit var onboardAutoScanRow: LinearLayout
+    private lateinit var onboardAutoScanSwitch: Switch
+    private lateinit var onboardPermActionBtn: Button
+    private lateinit var onboardSkipBtn: Button
+    private lateinit var onboardNextBtn: Button
+    private var onboardStep: Int = 0
+
+    // Main App Views
     private lateinit var rootLayout: LinearLayout
-    private lateinit var topBar: LinearLayout
+    private lateinit var topHeader: LinearLayout
+    private lateinit var topHeaderTitle: TextView
+    private lateinit var topThemeBtn: Button
     private lateinit var playerBox: FrameLayout
     private lateinit var videoView: VideoView
-    private lateinit var skipIndicatorText: TextView
-    private lateinit var backToAlbumsBtn: Button
-    private lateinit var audioTrackBtn: Button
-    private lateinit var themeToggleBtn: Button
-    private lateinit var headerTitleText: TextView
-    private lateinit var gridRecyclerView: RecyclerView
+    private lateinit var skipHudText: TextView
+    private lateinit var audioSwitchBtn: Button
+    private lateinit var contentContainer: FrameLayout
+    private lateinit var mainRecycler: RecyclerView
+    private lateinit var settingsScroll: ScrollView
+    private lateinit var bottomNavBar: LinearLayout
 
     private var mediaController: MediaController? = null
     private var mediaPlayerRef: MediaPlayer? = null
 
-    private val albumsMap = linkedMapOf<String, MutableList<VideoItem>>()
-    private var inAlbumGrid: Boolean = false
-    private var currentAlbum: String = "All Videos"
-    private var currentIndex: Int = -1
-    private var isDarkMode: Boolean = true
-    private var currentAudioTrackIndex: Int = 0
+    private val allVideos = mutableListOf<MediaEntry>()
+    private val allAudios = mutableListOf<MediaEntry>()
+    private val folderMap = linkedMapOf<String, MutableList<MediaEntry>>()
+    private val historyList = mutableListOf<MediaEntry>()
 
-    private val thumbCache = LruCache<String, Bitmap>(120)
+    private var activeTab: String = "Video"
+    private var currentQueue: List<MediaEntry> = emptyList()
+    private var currentPlayingIndex: Int = -1
+    private var currentAudioTrackIdx: Int = 0
+    private var isDarkMode: Boolean = true
+    private var autoScanEnabled: Boolean = true
+    private var saveHistoryEnabled: Boolean = true
+
+    private val thumbCache = LruCache<String, Bitmap>(140)
     private val thumbExecutor = Executors.newFixedThreadPool(3)
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            loadLocalVideos()
-        } else {
-            headerTitleText.text = "Permission दें"
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ ->
+        if (autoScanEnabled) {
+            scanDeviceMedia()
         }
+        refreshOnboardingUi()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        isDarkMode = prefs.getBoolean("dark_mode", true)
+        autoScanEnabled = prefs.getBoolean("auto_scan", true)
+        saveHistoryEnabled = prefs.getBoolean("save_history", true)
+        val onboardingDone = prefs.getBoolean("onboarding_done", false)
+
+        val outerContainer = FrameLayout(this)
+
         rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }
+
+        topHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+
+        topHeaderTitle = TextView(this).apply {
+            text = "HKR Player"
+            textSize = 19f
+            layoutParams = LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
+            )
+        }
+
+        audioSwitchBtn = Button(this).apply {
+            text = "Audio"
+            textSize = 11f
+            setAllCaps(false)
+            visibility = View.GONE
+            setOnClickListener { cycleAudioTrack() }
+        }
+
+        topThemeBtn = Button(this).apply {
+            text = if (isDarkMode) "Light" else "Dark"
+            textSize = 11f
+            setAllCaps(false)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginStart = dp(6)
+            }
+            setOnClickListener {
+                isDarkMode = !isDarkMode
+                prefs.edit().putBoolean("dark_mode", isDarkMode).apply()
+                applyTheme()
+                renderCurrentTab()
+            }
+        }
+
+        topHeader.addView(topHeaderTitle)
+        topHeader.addView(audioSwitchBtn)
+        topHeader.addView(topThemeBtn)
 
         playerBox = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
@@ -102,11 +194,11 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        skipIndicatorText = TextView(this).apply {
+        skipHudText = TextView(this).apply {
             textSize = 14f
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#B3000000"))
-            setPadding(dp(12), dp(6), dp(12), dp(6))
+            setBackgroundColor(Color.parseColor("#C2000000"))
+            setPadding(dp(14), dp(7), dp(14), dp(7))
             visibility = View.GONE
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -115,10 +207,9 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+        val detector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                val halfWidth = playerBox.width / 2f
-                if (e.x >= halfWidth) {
+                if (e.x >= playerBox.width / 2f) {
                     seekBy(10_000)
                 } else {
                     seekBy(-10_000)
@@ -126,451 +217,358 @@ class MainActivity : AppCompatActivity() {
                 return true
             }
         })
-
         playerBox.setOnTouchListener { _, event ->
-            gestureDetector.onTouchEvent(event)
+            detector.onTouchEvent(event)
             false
         }
 
         playerBox.addView(videoView)
-        playerBox.addView(skipIndicatorText)
+        playerBox.addView(skipHudText)
 
-        topBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-        }
-
-        backToAlbumsBtn = Button(this).apply {
-            text = "‹ Albums"
-            textSize = 12f
-            setAllCaps(false)
-            visibility = View.GONE
-            setOnClickListener { showAlbumsGrid() }
-        }
-
-        headerTitleText = TextView(this).apply {
-            text = "Albums"
-            textSize = 17f
-            maxLines = 1
-            layoutParams = LinearLayout.LayoutParams(
-                0,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                1f
-            ).apply {
-                marginStart = dp(8)
-                marginEnd = dp(6)
-            }
-        }
-
-        audioTrackBtn = Button(this).apply {
-            text = "Audio 1"
-            textSize = 11f
-            setAllCaps(false)
-            visibility = View.GONE
-            setOnClickListener { cycleAudioTrack() }
-        }
-
-        themeToggleBtn = Button(this).apply {
-            text = "Light"
-            textSize = 11f
-            setAllCaps(false)
-            setOnClickListener {
-                isDarkMode = !isDarkMode
-                applyTheme()
-            }
-        }
-
-        topBar.addView(backToAlbumsBtn)
-        topBar.addView(headerTitleText)
-        topBar.addView(audioTrackBtn)
-        topBar.addView(themeToggleBtn)
-
-        gridRecyclerView = RecyclerView(this).apply {
+        contentContainer = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
                 1f
             )
-            setPadding(dp(2), dp(2), dp(2), dp(2))
+        }
+
+        mainRecycler = RecyclerView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            setPadding(dp(4), dp(4), dp(4), dp(4))
             clipToPadding = false
         }
 
+        settingsScroll = buildSettingsView().apply {
+            visibility = View.GONE
+        }
+
+        contentContainer.addView(mainRecycler)
+        contentContainer.addView(settingsScroll)
+
+        bottomNavBar = buildBottomNavBar()
+
+        rootLayout.addView(topHeader)
         rootLayout.addView(playerBox)
-        rootLayout.addView(topBar)
-        rootLayout.addView(gridRecyclerView)
-        setContentView(rootLayout)
+        rootLayout.addView(contentContainer)
+        rootLayout.addView(bottomNavBar)
+
+        onboardingOverlay = buildOnboardingView().apply {
+            visibility = if (onboardingDone) View.GONE else View.VISIBLE
+        }
+
+        outerContainer.addView(rootLayout)
+        outerContainer.addView(onboardingOverlay)
+        setContentView(outerContainer)
 
         val controller = MediaController(this)
         controller.setAnchorView(videoView)
         controller.setPrevNextListeners(
-            { playPreviousEpisode() },
-            { playNextEpisode() }
+            { playPrevious() },
+            { playNext() }
         )
         videoView.setMediaController(controller)
         mediaController = controller
 
         videoView.setOnCompletionListener {
-            playNextEpisode()
+            playNext()
         }
 
         applyTheme()
-        checkPermissionAndLoad()
-    }
 
-    private fun applyTheme() {
-        val bgMain = if (isDarkMode) Color.parseColor("#111111") else Color.parseColor("#FFFFFF")
-        val bgBar = if (isDarkMode) Color.parseColor("#1C1C1E") else Color.parseColor("#F2F2F7")
-        val textMain = if (isDarkMode) Color.WHITE else Color.parseColor("#111111")
-        val btnBg = if (isDarkMode) Color.parseColor("#2C2C2E") else Color.parseColor("#E5E5EA")
-
-        rootLayout.setBackgroundColor(bgMain)
-        topBar.setBackgroundColor(bgBar)
-        headerTitleText.setTextColor(textMain)
-
-        for (btn in listOf(backToAlbumsBtn, audioTrackBtn, themeToggleBtn)) {
-            btn.setBackgroundColor(btnBg)
-            btn.setTextColor(textMain)
-        }
-        themeToggleBtn.text = if (isDarkMode) "Light" else "Dark"
-
-        if (inAlbumGrid) {
-            openAlbum(currentAlbum)
-        } else if (albumsMap.isNotEmpty()) {
-            showAlbumsGrid()
-        }
-    }
-
-    private fun seekBy(deltaMs: Int) {
-        if (!videoView.canSeekForward() && deltaMs > 0) return
-        val target = (videoView.currentPosition + deltaMs).coerceIn(0, videoView.duration.coerceAtLeast(0))
-        videoView.seekTo(target)
-        skipIndicatorText.text = if (deltaMs > 0) "+10s ⏭" else "⏮ -10s"
-        skipIndicatorText.visibility = View.VISIBLE
-        mainHandler.removeCallbacksAndMessages("skip_hide")
-        mainHandler.postAtTime({ skipIndicatorText.visibility = View.GONE }, "skip_hide", android.os.SystemClock.uptimeMillis() + 700)
-    }
-
-    private fun cycleAudioTrack() {
-        val mp = mediaPlayerRef ?: return
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN) return
-        val tracks = mp.trackInfo ?: return
-        val audioIndices = tracks.mapIndexedNotNull { idx, info ->
-            if (info.trackType == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO) idx else null
-        }
-        if (audioIndices.size <= 1) {
-            skipIndicatorText.text = "Single Audio Track"
-            skipIndicatorText.visibility = View.VISIBLE
-            mainHandler.postDelayed({ skipIndicatorText.visibility = View.GONE }, 900)
-            return
-        }
-        currentAudioTrackIndex = (currentAudioTrackIndex + 1) % audioIndices.size
-        val selectedTrackIdx = audioIndices[currentAudioTrackIndex]
-        mp.selectTrack(selectedTrackIdx)
-        val lang = tracks[selectedTrackIdx].language?.uppercase().orEmpty()
-        val label = if (lang.isNotBlank()) "Audio: $lang" else "Audio ${currentAudioTrackIndex + 1}/${audioIndices.size}"
-        audioTrackBtn.text = label
-        skipIndicatorText.text = label
-        skipIndicatorText.visibility = View.VISIBLE
-        mainHandler.postDelayed({ skipIndicatorText.visibility = View.GONE }, 1000)
-    }
-
-    override fun onPause() {
-        super.onPause()
-        mediaController?.hide()
-    }
-
-    override fun onStop() {
-        super.onStop()
-        mediaController?.hide()
-    }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
-    private fun formatDuration(ms: Long): String {
-        val totalSec = (ms / 1000).coerceAtLeast(0)
-        val hrs = totalSec / 3600
-        val mins = (totalSec % 3600) / 60
-        val secs = totalSec % 60
-        return if (hrs > 0) {
-            String.format("%d:%02d:%02d", hrs, mins, secs)
+        if (onboardingDone) {
+            if (hasMediaPermission()) {
+                if (autoScanEnabled) scanDeviceMedia()
+            } else {
+                requestNeededPermissions()
+            }
+            selectTab("Video")
         } else {
-            String.format("%02d:%02d", mins, secs)
+            onboardStep = 0
+            refreshOnboardingUi()
         }
     }
 
-    private fun checkPermissionAndLoad() {
-        val perm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.READ_MEDIA_VIDEO
-        } else {
-            Manifest.permission.READ_EXTERNAL_STORAGE
+    private fun buildOnboardingView(): LinearLayout {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.parseColor("#0B1722"))
+            setPadding(dp(24), dp(24), dp(24), dp(24))
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            isClickable = true
         }
 
-        if (ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED) {
-            loadLocalVideos()
-        } else {
-            permissionLauncher.launch(perm)
-        }
-    }
-
-    private fun loadLocalVideos() {
-        albumsMap.clear()
-        val allList = mutableListOf<VideoItem>()
-
-        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
-        } else {
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        }
-
-        val projection = arrayOf(
-            MediaStore.Video.Media._ID,
-            MediaStore.Video.Media.DISPLAY_NAME,
-            MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
-            MediaStore.Video.Media.DURATION
-        )
-
-        val sortOrder = "${MediaStore.Video.Media.DISPLAY_NAME} ASC"
-
-        contentResolver.query(collection, projection, null, null, sortOrder)?.use { cursor ->
-            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
-            val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
-            val bucketCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
-            val durCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
-
-            while (cursor.moveToNext()) {
-                val id = cursor.getLong(idCol)
-                val name = cursor.getString(nameCol) ?: "Video"
-                val bucket = cursor.getString(bucketCol)?.takeIf { it.isNotBlank() } ?: "Videos"
-                val duration = cursor.getLong(durCol)
-                val contentUri = ContentUris.withAppendedId(collection, id)
-
-                val item = VideoItem(name, contentUri, bucket, duration)
-                allList.add(item)
-                albumsMap.getOrPut(bucket) { mutableListOf() }.add(item)
+        val badge = TextView(this).apply {
+            text = "HKR"
+            textSize = 26f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#FF8800"))
+            setPadding(dp(18), dp(10), dp(18), dp(10))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(20)
             }
         }
 
-        if (allList.isEmpty()) {
-            headerTitleText.text = "कोई वीडियो नहीं मिला"
-            return
-        }
-
-        val ordered = linkedMapOf<String, MutableList<VideoItem>>()
-        ordered["All Videos"] = allList
-        for ((k, v) in albumsMap) {
-            ordered[k] = v
-        }
-        albumsMap.clear()
-        albumsMap.putAll(ordered)
-
-        showAlbumsGrid()
-    }
-
-    private fun showAlbumsGrid() {
-        inAlbumGrid = false
-        backToAlbumsBtn.visibility = View.GONE
-        headerTitleText.text = "Albums"
-
-        val albumNames = albumsMap.keys.toList()
-        gridRecyclerView.layoutManager = GridLayoutManager(this, 3)
-        gridRecyclerView.adapter = AlbumsAdapter(albumNames) { albumName ->
-            openAlbum(albumName)
-        }
-    }
-
-    private fun openAlbum(albumName: String) {
-        inAlbumGrid = true
-        currentAlbum = albumName
-        backToAlbumsBtn.visibility = View.VISIBLE
-        headerTitleText.text = albumName
-
-        val list = albumsMap[albumName] ?: emptyList()
-        gridRecyclerView.layoutManager = GridLayoutManager(this, 4)
-        gridRecyclerView.adapter = VideosGridAdapter(list, currentIndex) { idx ->
-            playEpisode(idx)
-        }
-    }
-
-    private fun playEpisode(index: Int) {
-        val list = albumsMap[currentAlbum] ?: return
-        if (index !in list.indices) return
-        currentIndex = index
-        currentAudioTrackIndex = 0
-        val item = list[index]
-
-        playerBox.visibility = View.VISIBLE
-        audioTrackBtn.visibility = View.VISIBLE
-        audioTrackBtn.text = "Audio"
-        headerTitleText.text = item.title
-
-        videoView.setVideoURI(item.uri)
-        videoView.setOnPreparedListener { mp ->
-            mediaPlayerRef = mp
-            mp.start()
-            mediaController?.show(4000)
-        }
-        videoView.start()
-
-        if (inAlbumGrid) {
-            gridRecyclerView.adapter = VideosGridAdapter(list, currentIndex) { idx ->
-                playEpisode(idx)
+        onboardTitle = TextView(this).apply {
+            textSize = 22f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(10)
             }
         }
-    }
 
-    private fun playPreviousEpisode() {
-        if (currentIndex > 0) {
-            playEpisode(currentIndex - 1)
-        }
-    }
-
-    private fun playNextEpisode() {
-        val list = albumsMap[currentAlbum] ?: return
-        if (currentIndex + 1 < list.size) {
-            playEpisode(currentIndex + 1)
-        }
-    }
-
-    private fun loadThumbnail(item: VideoItem, imageView: ImageView) {
-        val key = item.uri.toString()
-        val cached = thumbCache.get(key)
-        if (cached != null) {
-            imageView.setImageBitmap(cached)
-            return
-        }
-
-        imageView.setImageBitmap(null)
-        imageView.tag = key
-
-        thumbExecutor.execute {
-            var bmp: Bitmap? = null
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    bmp = contentResolver.loadThumbnail(
-                        item.uri,
-                        android.util.Size(dp(180), dp(180)),
-                        null
-                    )
-                }
-            } catch (_: Exception) {
+        onboardDesc = TextView(this).apply {
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#CBD5E1"))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(20)
             }
+        }
 
-            if (bmp == null) {
-                val retriever = MediaMetadataRetriever()
-                try {
-                    retriever.setDataSource(this@MainActivity, item.uri)
-                    bmp = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                        ?: retriever.frameAtTime
-                } catch (_: Exception) {
-                } finally {
-                    try {
-                        retriever.release()
-                    } catch (_: Exception) {
-                    }
-                }
+        onboardAutoScanRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(14)
             }
+        }
 
-            if (bmp != null) {
-                thumbCache.put(key, bmp)
-                val finalBmp = bmp
-                mainHandler.post {
-                    if (imageView.tag == key) {
-                        imageView.setImageBitmap(finalBmp)
-                    }
+        val scanLabel = TextView(this).apply {
+            text = "Let HKR Player scan my device for media"
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
+            )
+        }
+
+        onboardAutoScanSwitch = Switch(this).apply {
+            isChecked = autoScanEnabled
+            setOnCheckedChangeListener { _, checked ->
+                autoScanEnabled = checked
+                prefs.edit().putBoolean("auto_scan", checked).apply()
+            }
+        }
+
+        onboardAutoScanRow.addView(scanLabel)
+        onboardAutoScanRow.addView(onboardAutoScanSwitch)
+
+        onboardPermActionBtn = Button(this).apply {
+            text = "Grant Media & Files Access"
+            textSize = 13f
+            setAllCaps(false)
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#FF8800"))
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(18)
+            }
+            setOnClickListener {
+                requestNeededPermissions()
+                openAllFilesAccessSettings()
+            }
+        }
+
+        val bottomRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(24)
+            }
+        }
+
+        onboardSkipBtn = Button(this).apply {
+            text = "SKIP"
+            textSize = 13f
+            setTextColor(Color.parseColor("#FF8800"))
+            setBackgroundColor(Color.TRANSPARENT)
+            setOnClickListener { finishOnboarding() }
+        }
+
+        val spacer = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+        }
+
+        onboardNextBtn = Button(this).apply {
+            text = "NEXT"
+            textSize = 13f
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#FF8800"))
+            setOnClickListener {
+                if (onboardStep < 2) {
+                    onboardStep++
+                    refreshOnboardingUi()
+                } else {
+                    finishOnboarding()
                 }
             }
         }
+
+        bottomRow.addView(onboardSkipBtn)
+        bottomRow.addView(spacer)
+        bottomRow.addView(onboardNextBtn)
+
+        box.addView(badge)
+        box.addView(onboardTitle)
+        box.addView(onboardDesc)
+        box.addView(onboardAutoScanRow)
+        box.addView(onboardPermActionBtn)
+        box.addView(bottomRow)
+        return box
     }
 
-    inner class AlbumsAdapter(
-        private val names: List<String>,
-        private val onClick: (String) -> Unit
-    ) : RecyclerView.Adapter<AlbumsAdapter.VH>() {
+    private fun refreshOnboardingUi() {
+        when (onboardStep) {
+            0 -> {
+                onboardTitle.text = "Welcome to HKR Player!"
+                onboardDesc.text = "Local videos, series folders, multi-audio tracks, double-tap ±10s skip aur dark/light theme ke saath fast media player."
+                onboardAutoScanRow.visibility = View.GONE
+                onboardPermActionBtn.visibility = View.GONE
+                onboardNextBtn.text = "NEXT"
+            }
+            1 -> {
+                onboardTitle.text = "Auto-discover your media"
+                onboardDesc.text = "HKR Player aapke device ke videos, anime folders aur audio files ko scan karke arrange kar sakta hai."
+                onboardAutoScanRow.visibility = View.VISIBLE
+                onboardPermActionBtn.visibility = View.GONE
+                onboardNextBtn.text = "NEXT"
+            }
+            else -> {
+                onboardTitle.text = "Permission"
+                onboardDesc.text = "Device ke videos aur folders access karne ke liye media permission aur zaroorat pade to All files access enable karein."
+                onboardAutoScanRow.visibility = View.GONE
+                onboardPermActionBtn.visibility = View.VISIBLE
+                onboardNextBtn.text = "DONE"
+            }
+        }
+    }
 
-        inner class VH(view: View) : RecyclerView.ViewHolder(view) {
-            val thumb: ImageView = view.findViewById(101)
-            val title: TextView = view.findViewById(102)
-            val count: TextView = view.findViewById(103)
+    private fun finishOnboarding() {
+        prefs.edit().putBoolean("onboarding_done", true).apply()
+        onboardingOverlay.visibility = View.GONE
+        if (autoScanEnabled && hasMediaPermission()) {
+            scanDeviceMedia()
+        }
+        selectTab("Video")
+    }
+
+    private fun buildBottomNavBar(): LinearLayout {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(56)
+            )
+            setBackgroundColor(Color.parseColor("#1C1C1E"))
         }
 
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
-            val box = LinearLayout(parent.context).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(6), dp(6), dp(6), dp(10))
-                layoutParams = RecyclerView.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                )
-            }
-
-            val img = ImageView(parent.context).apply {
-                id = 101
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                setBackgroundColor(Color.parseColor("#242426"))
+        val tabs = listOf("Video", "Audio", "Browse", "Playlists", "More")
+        for (tab in tabs) {
+            val btn = Button(this).apply {
+                text = tab
+                textSize = 11f
+                setAllCaps(false)
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.TRANSPARENT)
                 layoutParams = LinearLayout.LayoutParams(
+                    0,
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    dp(115)
+                    1f
                 )
+                setOnClickListener { selectTab(tab) }
             }
-
-            val tView = TextView(parent.context).apply {
-                id = 102
-                textSize = 14f
-                setTextColor(if (isDarkMode) Color.WHITE else Color.parseColor("#111111"))
-                maxLines = 1
-                setPadding(0, dp(6), 0, 0)
-            }
-
-            val cView = TextView(parent.context).apply {
-                id = 103
-                textSize = 12f
-                setTextColor(if (isDarkMode) Color.parseColor("#9E9EA4") else Color.parseColor("#66666E"))
-            }
-
-            box.addView(img)
-            box.addView(tView)
-            box.addView(cView)
-            return VH(box)
+            bar.addView(btn)
         }
-
-        override fun onBindViewHolder(holder: VH, position: Int) {
-            val albumName = names[position]
-            val items = albumsMap[albumName].orEmpty()
-            holder.title.text = albumName
-            holder.count.text = "${items.size}"
-            val firstVideo = items.firstOrNull()
-            if (firstVideo != null) {
-                loadThumbnail(firstVideo, holder.thumb)
-            }
-            holder.itemView.setOnClickListener { onClick(albumName) }
-        }
-
-        override fun getItemCount(): Int = names.size
+        return bar
     }
 
-    inner class VideosGridAdapter(
-        private val items: List<VideoItem>,
-        private val playingIndex: Int,
-        private val onClick: (Int) -> Unit
-    ) : RecyclerView.Adapter<VideosGridAdapter.VH>() {
-
-        inner class VH(view: View) : RecyclerView.ViewHolder(view) {
-            val thumb: ImageView = view.findViewById(201)
-            val durationText: TextView = view.findViewById(202)
-            val overlay: View = view.findViewById(203)
+    private fun buildSettingsView(): ScrollView {
+        val scroll = ScrollView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }
 
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
-            val frame = FrameLayout(parent.context).apply {
-                setPadding(dp(2), dp(2), dp(2), dp(2))
-                layoutParams = RecyclerView.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    dp(92)
-                )
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(24))
+        }
+
+        fun sectionTitle(label: String): TextView = TextView(this).apply {
+            text = label
+            textSize = 14f
+            setTextColor(Color.parseColor("#FF8800"))
+            setPadding(0, dp(12), 0, dp(6))
+        }
+
+        fun settingRow(title: String, subtitle: String, onClick: () -> Unit): LinearLayout =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, dp(10), 0, dp(10))
+                isClickable = true
+                setOnClickListener { onClick() }
+
+                val t = TextView(this@MainActivity).apply {
+                    text = title
+                    textSize = 15f
+                    setTextColor(if (isDarkMode) Color.WHITE else Color.parseColor("#111111"))
+                }
+                val s = TextView(this@MainActivity).apply {
+                    text = subtitle
+                    textSize = 12f
+                    setTextColor(if (isDarkMode) Color.parseColor("#A1A1AA") else Color.parseColor("#52525B"))
+                }
+                addView(t)
+                addView(s)
             }
 
-            val img = ImageView(parent.context).apply {
-                id = 201
-                scaleType = ImageView.ScaleType.CENTER_CROP
-         
+        container.addView(sectionTitle("Interface & Media"))
+        container.addView(settingRow(
+            "Theme: ${if (isDarkMode) "Dark Mode" else "Light Mode"}",
+            "Tap karke Dark aur Light mode badlein"
+        ) {
+            isDarkMode = !isDarkMode
+            prefs.edit().putBoolean("dark_mode", isDarkMode).apply()
+            applyTheme()
+            settingsScroll.removeAllViews()
+            settingsScroll.addView(buildSettingsView().getChildAt(0))
+        })
+
+        val autoScanCheck = CheckBox(this).apply {
+            text = "Auto rescan media on startup"
+            isChecked = autoScanEnabled
+            setTextColor(if (isDarkMode) Color.WHITE else Color.parseColor("#111111"))
+            setOnCheckedChangeListener { _, checked ->
+                autoScanEnabled =
