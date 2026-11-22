@@ -27,15 +27,17 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.MediaController
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.VideoView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.GridLayoutManager
@@ -74,18 +76,29 @@ class MainActivity : AppCompatActivity() {
     private lateinit var topHeader: LinearLayout
     private lateinit var topHeaderTitle: TextView
     private lateinit var topThemeBtn: Button
-    private lateinit var playerBox: FrameLayout
-    private lateinit var videoView: VideoView
-    private lateinit var skipHudText: TextView
-    private lateinit var audioSwitchBtn: Button
     private lateinit var contentContainer: FrameLayout
     private lateinit var mainRecycler: RecyclerView
     private lateinit var settingsScroll: ScrollView
+    private lateinit var fabPlayAll: ImageButton
     private lateinit var bottomNavBar: LinearLayout
 
-    private var mediaController: MediaController? = null
-    private var mediaPlayerRef: MediaPlayer? = null
+    // Full-screen / VLC-style Player Overlay
+    private lateinit var playerOverlay: FrameLayout
+    private lateinit var videoView: VideoView
+    private lateinit var playerTitleText: TextView
+    private lateinit var centerHudText: TextView
+    private lateinit var centerHudSubText: TextView
+    private lateinit var centerHudBox: LinearLayout
+    private lateinit var currentTimeText: TextView
+    private lateinit var totalTimeText: TextView
+    private lateinit var playerSeekBar: SeekBar
+    private lateinit var playPauseBtn: ImageButton
+    private lateinit var repeatToggleBtn: ImageButton
+    private lateinit var aspectRatioBtn: ImageButton
+    private lateinit var trackInfoBtn: ImageButton
+    private lateinit var moreOptionsBtn: ImageButton
 
+    private var mediaPlayerRef: MediaPlayer? = null
     private val allVideos = mutableListOf<MediaEntry>()
     private val allAudios = mutableListOf<MediaEntry>()
     private val folderMap = linkedMapOf<String, MutableList<MediaEntry>>()
@@ -98,13 +111,34 @@ class MainActivity : AppCompatActivity() {
     private var isDarkMode: Boolean = true
     private var autoScanEnabled: Boolean = true
     private var saveHistoryEnabled: Boolean = true
+    private var repeatEnabled: Boolean = false
+    private var aspectModeIndex: Int = 0
+    private var playbackSpeed: Float = 1.0f
+    private var isPlayerVisible: Boolean = false
+
+    private val aspectModes = listOf("Fit", "16:9", "4:3", "Fill")
 
     private val thumbCache = LruCache<String, Bitmap>(140)
     private val thumbExecutor = Executors.newFixedThreadPool(3)
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val hideSkipRunnable = Runnable {
-        if (::skipHudText.isInitialized) {
-            skipHudText.visibility = View.GONE
+
+    private val hideHudRunnable = Runnable {
+        if (::centerHudBox.isInitialized) {
+            centerHudBox.visibility = View.GONE
+        }
+    }
+
+    private val progressRunnable = object : Runnable {
+        override fun run() {
+            if (isPlayerVisible && ::videoView.isInitialized && videoView.duration > 0) {
+                val pos = videoView.currentPosition.coerceAtLeast(0)
+                val dur = videoView.duration.coerceAtLeast(1)
+                playerSeekBar.max = dur
+                playerSeekBar.progress = pos
+                currentTimeText.text = formatDuration(pos.toLong())
+                totalTimeText.text = formatDuration(dur.toLong())
+            }
+            mainHandler.postDelayed(this, 500)
         }
     }
 
@@ -113,6 +147,7 @@ class MainActivity : AppCompatActivity() {
     ) { _ ->
         if (autoScanEnabled) {
             scanDeviceMedia()
+            renderCurrentTab()
         }
         refreshOnboardingUi()
     }
@@ -138,12 +173,12 @@ class MainActivity : AppCompatActivity() {
         topHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(10), dp(12), dp(10))
+            setPadding(dp(14), dp(12), dp(14), dp(12))
         }
 
         topHeaderTitle = TextView(this).apply {
             text = "HKR Player"
-            textSize = 19f
+            textSize = 20f
             layoutParams = LinearLayout.LayoutParams(
                 0,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -151,24 +186,10 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        audioSwitchBtn = Button(this).apply {
-            text = "Audio"
-            textSize = 11f
-            setAllCaps(false)
-            visibility = View.GONE
-            setOnClickListener { cycleAudioTrack() }
-        }
-
         topThemeBtn = Button(this).apply {
             text = if (isDarkMode) "Light" else "Dark"
             textSize = 11f
             setAllCaps(false)
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                marginStart = dp(6)
-            }
             setOnClickListener {
                 isDarkMode = !isDarkMode
                 prefs.edit().putBoolean("dark_mode", isDarkMode).apply()
@@ -178,56 +199,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         topHeader.addView(topHeaderTitle)
-        topHeader.addView(audioSwitchBtn)
         topHeader.addView(topThemeBtn)
-
-        playerBox = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(215)
-            )
-            setBackgroundColor(Color.BLACK)
-            visibility = View.GONE
-        }
-
-        videoView = VideoView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                Gravity.CENTER
-            )
-        }
-
-        skipHudText = TextView(this).apply {
-            textSize = 14f
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#C2000000"))
-            setPadding(dp(14), dp(7), dp(14), dp(7))
-            visibility = View.GONE
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-            )
-        }
-
-        val detector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDoubleTap(e: MotionEvent): Boolean {
-                if (e.x >= playerBox.width / 2f) {
-                    seekBy(10_000)
-                } else {
-                    seekBy(-10_000)
-                }
-                return true
-            }
-        })
-        playerBox.setOnTouchListener { _, event ->
-            detector.onTouchEvent(event)
-            false
-        }
-
-        playerBox.addView(videoView)
-        playerBox.addView(skipHudText)
 
         contentContainer = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
@@ -242,7 +214,7 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
-            setPadding(dp(4), dp(4), dp(4), dp(4))
+            setPadding(dp(6), dp(6), dp(6), dp(76))
             clipToPadding = false
         }
 
@@ -250,36 +222,48 @@ class MainActivity : AppCompatActivity() {
             visibility = View.GONE
         }
 
+        fabPlayAll = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_media_play)
+            setColorFilter(Color.WHITE)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#FF8800"))
+            }
+            elevation = dp(8).toFloat()
+            layoutParams = FrameLayout.LayoutParams(dp(56), dp(56), Gravity.BOTTOM or Gravity.END).apply {
+                setMargins(dp(18), dp(18), dp(18), dp(18))
+            }
+            setOnClickListener {
+                if (allVideos.isNotEmpty()) {
+                    playFromList(allVideos, 0)
+                } else {
+                    Toast.makeText(this@MainActivity, "Koi video nahi mila", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
         contentContainer.addView(mainRecycler)
         contentContainer.addView(settingsScroll)
+        contentContainer.addView(fabPlayAll)
 
         bottomNavBar = buildBottomNavBar()
 
         rootLayout.addView(topHeader)
-        rootLayout.addView(playerBox)
         rootLayout.addView(contentContainer)
         rootLayout.addView(bottomNavBar)
+
+        playerOverlay = buildPlayerOverlay().apply {
+            visibility = View.GONE
+        }
 
         onboardingOverlay = buildOnboardingView().apply {
             visibility = if (onboardingDone) View.GONE else View.VISIBLE
         }
 
         outerContainer.addView(rootLayout)
+        outerContainer.addView(playerOverlay)
         outerContainer.addView(onboardingOverlay)
         setContentView(outerContainer)
-
-        val controller = MediaController(this)
-        controller.setAnchorView(videoView)
-        controller.setPrevNextListeners(
-            { playPrevious() },
-            { playNext() }
-        )
-        videoView.setMediaController(controller)
-        mediaController = controller
-
-        videoView.setOnCompletionListener {
-            playNext()
-        }
 
         applyTheme()
 
@@ -293,6 +277,405 @@ class MainActivity : AppCompatActivity() {
         } else {
             onboardStep = 0
             refreshOnboardingUi()
+        }
+
+        mainHandler.post(progressRunnable)
+    }
+
+    private fun buildPlayerOverlay(): FrameLayout {
+        val box = FrameLayout(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            setBackgroundColor(Color.BLACK)
+            isClickable = true
+        }
+
+        videoView = VideoView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.CENTER
+            )
+        }
+
+        val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                if (e.x >= box.width / 2f) {
+                    seekBy(10_000)
+                } else {
+                    seekBy(-10_000)
+                }
+                return true
+            }
+
+            override fun onLongPress(e: MotionEvent) {
+                showPlayerMoreDialog()
+            }
+        })
+
+        box.setOnTouchListener { _, event ->
+            gestureDetector.onTouchEvent(event)
+            false
+        }
+
+        playerTitleText = TextView(this).apply {
+            textSize = 15f
+            maxLines = 1
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#88000000"))
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP
+            )
+        }
+
+        centerHudBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.parseColor("#CC141416"))
+            setPadding(dp(20), dp(14), dp(20), dp(14))
+            visibility = View.GONE
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        }
+
+        centerHudText = TextView(this).apply {
+            textSize = 22f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+        }
+
+        centerHudSubText = TextView(this).apply {
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#D4D4D8"))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(4)
+            }
+        }
+
+        centerHudBox.addView(centerHudText)
+        centerHudBox.addView(centerHudSubText)
+
+        val bottomControls = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#B3000000"))
+            setPadding(dp(14), dp(10), dp(14), dp(14))
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM
+            )
+        }
+
+        val timeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        currentTimeText = TextView(this).apply {
+            text = "00:00"
+            textSize = 12f
+            setTextColor(Color.WHITE)
+        }
+
+        playerSeekBar = SeekBar(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(8)
+                marginEnd = dp(8)
+            }
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) {
+                        currentTimeText.text = formatDuration(progress.toLong())
+                    }
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {
+                    sb?.let { videoView.seekTo(it.progress) }
+                }
+            })
+        }
+
+        totalTimeText = TextView(this).apply {
+            text = "00:00"
+            textSize = 12f
+            setTextColor(Color.WHITE)
+        }
+
+        timeRow.addView(currentTimeText)
+        timeRow.addView(playerSeekBar)
+        timeRow.addView(totalTimeText)
+
+        val actionsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(8)
+            }
+        }
+
+        trackInfoBtn = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_menu_sort_alphabetically)
+            setColorFilter(Color.WHITE)
+            setBackgroundColor(Color.TRANSPARENT)
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            setOnClickListener { cycleAudioTrack() }
+        }
+
+        repeatToggleBtn = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_menu_rotate)
+            setColorFilter(Color.WHITE)
+            setBackgroundColor(Color.TRANSPARENT)
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            setOnClickListener {
+                repeatEnabled = !repeatEnabled
+                repeatToggleBtn.setColorFilter(
+                    if (repeatEnabled) Color.parseColor("#FF8800") else Color.WHITE
+                )
+                showHud(if (repeatEnabled) "Repeat ON" else "Repeat OFF", "")
+            }
+        }
+
+        val spacerLeft = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+        }
+
+        playPauseBtn = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_media_pause)
+            setColorFilter(Color.WHITE)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setStroke(dp(2), Color.WHITE)
+                setColor(Color.parseColor("#66000000"))
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(50), dp(50))
+            setOnClickListener {
+                if (videoView.isPlaying) {
+                    videoView.pause()
+                    playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
+                } else {
+                    videoView.start()
+                    playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
+                }
+            }
+        }
+
+        val spacerRight = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+        }
+
+        aspectRatioBtn = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_menu_crop)
+            setColorFilter(Color.WHITE)
+            setBackgroundColor(Color.TRANSPARENT)
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            setOnClickListener { cycleAspectRatio() }
+        }
+
+        moreOptionsBtn = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_menu_more)
+            setColorFilter(Color.WHITE)
+            setBackgroundColor(Color.TRANSPARENT)
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            setOnClickListener { showPlayerMoreDialog() }
+        }
+
+        actionsRow.addView(trackInfoBtn)
+        actionsRow.addView(repeatToggleBtn)
+        actionsRow.addView(spacerLeft)
+        actionsRow.addView(playPauseBtn)
+        actionsRow.addView(spacerRight)
+        actionsRow.addView(aspectRatioBtn)
+        actionsRow.addView(moreOptionsBtn)
+
+        bottomControls.addView(timeRow)
+        bottomControls.addView(actionsRow)
+
+        videoView.setOnCompletionListener {
+            if (repeatEnabled && currentPlayingIndex in currentQueue.indices) {
+                playFromList(currentQueue, currentPlayingIndex)
+            } else if (currentPlayingIndex + 1 < currentQueue.size) {
+                playFromList(currentQueue, currentPlayingIndex + 1)
+            } else {
+                closePlayerOverlay()
+            }
+        }
+
+        box.addView(videoView)
+        box.addView(playerTitleText)
+        box.addView(centerHudBox)
+        box.addView(bottomControls)
+        return box
+    }
+
+    private fun cycleAspectRatio() {
+        aspectModeIndex = (aspectModeIndex + 1) % aspectModes.size
+        val mode = aspectModes[aspectModeIndex]
+        val parentW = playerOverlay.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val parentH = playerOverlay.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+
+        val params = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            Gravity.CENTER
+        )
+
+        when (mode) {
+            "16:9" -> {
+                params.width = parentW
+                params.height = (parentW * 9f / 16f).toInt().coerceAtMost(parentH)
+            }
+            "4:3" -> {
+                params.width = (parentH * 4f / 3f).toInt().coerceAtMost(parentW)
+                params.height = (params.width * 3f / 4f).toInt()
+            }
+            "Fill" -> {
+                params.width = parentW
+                params.height = parentH
+            }
+            else -> {
+                params.width = ViewGroup.LayoutParams.MATCH_PARENT
+                params.height = ViewGroup.LayoutParams.MATCH_PARENT
+            }
+        }
+
+        videoView.layoutParams = params
+        aspectRatioBtn.setColorFilter(
+            if (mode == "Fit") Color.WHITE else Color.parseColor("#FF8800")
+        )
+        showHud(mode, "Long tap for more options")
+    }
+
+    private fun showPlayerMoreDialog() {
+        val options = arrayOf(
+            "Playback Speed (${playbackSpeed}x)",
+            "Audio Track Switch",
+            "Previous Episode",
+            "Next Episode",
+            "Close Player"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Player Options")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> cyclePlaybackSpeed()
+                    1 -> cycleAudioTrack()
+                    2 -> if (currentPlayingIndex > 0) playFromList(currentQueue, currentPlayingIndex - 1)
+                    3 -> if (currentPlayingIndex + 1 < currentQueue.size) playFromList(currentQueue, currentPlayingIndex + 1)
+                    4 -> closePlayerOverlay()
+                }
+            }
+            .show()
+    }
+
+    private fun cyclePlaybackSpeed() {
+        val speeds = listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
+        val nextIdx = (speeds.indexOfFirst { it == playbackSpeed } + 1) % speeds.size
+        playbackSpeed = speeds[nextIdx]
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                mediaPlayerRef?.playbackParams = mediaPlayerRef?.playbackParams?.setSpeed(playbackSpeed)
+                    ?: return
+            } catch (_: Exception) {
+            }
+        }
+        showHud("${playbackSpeed}x", "Playback speed")
+    }
+
+    private fun cycleAudioTrack() {
+        val mp = mediaPlayerRef ?: return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN) return
+        val tracks = mp.trackInfo ?: return
+        val audioIndices = tracks.mapIndexedNotNull { idx, info ->
+            if (info.trackType == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO) idx else null
+        }
+        if (audioIndices.size <= 1) {
+            showHud("Audio 1/1", "Single audio track in file")
+            return
+        }
+        currentAudioTrackIdx = (currentAudioTrackIdx + 1) % audioIndices.size
+        val selected = audioIndices[currentAudioTrackIdx]
+        mp.selectTrack(selected)
+        val lang = tracks[selected].language?.uppercase().orEmpty()
+        val label = if (lang.isNotBlank()) "Audio: $lang" else "Audio ${currentAudioTrackIdx + 1}/${audioIndices.size}"
+        showHud(label, "Switched audio track")
+    }
+
+    private fun seekBy(deltaMs: Int) {
+        val target = (videoView.currentPosition + deltaMs).coerceIn(0, videoView.duration.coerceAtLeast(0))
+        videoView.seekTo(target)
+        showHud(if (deltaMs > 0) "+10s" else "-10s", if (deltaMs > 0) "Forward" else "Backward")
+    }
+
+    private fun showHud(main: String, sub: String) {
+        centerHudText.text = main
+        if (sub.isBlank()) {
+            centerHudSubText.visibility = View.GONE
+        } else {
+            centerHudSubText.text = sub
+            centerHudSubText.visibility = View.VISIBLE
+        }
+        centerHudBox.visibility = View.VISIBLE
+        mainHandler.removeCallbacks(hideHudRunnable)
+        mainHandler.postDelayed(hideHudRunnable, 1100)
+    }
+
+    private fun playFromList(list: List<MediaEntry>, index: Int) {
+        if (index !in list.indices) return
+        currentQueue = list
+        currentPlayingIndex = index
+        currentAudioTrackIdx = 0
+        val item = list[index]
+
+        if (saveHistoryEnabled) {
+            historyList.removeAll { it.uri == item.uri }
+            historyList.add(0, item)
+        }
+
+        isPlayerVisible = true
+        playerOverlay.visibility = View.VISIBLE
+        playerTitleText.text = item.title
+        playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
+        videoView.setVideoURI(item.uri)
+        videoView.setOnPreparedListener { mp ->
+            mediaPlayerRef = mp
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && playbackSpeed != 1.0f) {
+                try {
+                    mp.playbackParams = mp.playbackParams.setSpeed(playbackSpeed)
+                } catch (_: Exception) {
+                }
+            }
+            mp.start()
+        }
+        videoView.start()
+    }
+
+    private fun closePlayerOverlay() {
+        isPlayerVisible = false
+        videoView.stopPlayback()
+        playerOverlay.visibility = View.GONE
+        renderCurrentTab()
+    }
+
+    override fun onBackPressed() {
+        if (isPlayerVisible) {
+            closePlayerOverlay()
+        } else {
+            super.onBackPressed()
         }
     }
 
@@ -462,14 +845,14 @@ class MainActivity : AppCompatActivity() {
         when (onboardStep) {
             0 -> {
                 onboardTitle.text = "Welcome to HKR Player!"
-                onboardDesc.text = "Local videos, series folders, multi-audio tracks, double-tap ±10s skip aur dark/light theme ke saath fast media player."
+                onboardDesc.text = "Local videos, folders, double-tap ±10s skip, aspect ratio switch aur dark/light theme ke saath fast media player."
                 onboardAutoScanRow.visibility = View.GONE
                 onboardPermActionBtn.visibility = View.GONE
                 onboardNextBtn.text = "NEXT"
             }
             1 -> {
                 onboardTitle.text = "Auto-discover your media"
-                onboardDesc.text = "HKR Player aapke device ke videos, anime folders aur audio files ko scan karke arrange kar sakta hai."
+                onboardDesc.text = "HKR Player aapke device ke videos, folders aur audio files ko scan karke arrange kar sakta hai."
                 onboardAutoScanRow.visibility = View.VISIBLE
                 onboardPermActionBtn.visibility = View.GONE
                 onboardNextBtn.text = "NEXT"
@@ -498,9 +881,9 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(56)
+                dp(58)
             )
-            setBackgroundColor(Color.parseColor("#1C1C1E"))
+            elevation = dp(6).toFloat()
         }
 
         val tabs = listOf("Video", "Audio", "Browse", "Playlists", "More")
@@ -509,7 +892,6 @@ class MainActivity : AppCompatActivity() {
                 text = tab
                 textSize = 11f
                 setAllCaps(false)
-                setTextColor(Color.WHITE)
                 setBackgroundColor(Color.TRANSPARENT)
                 layoutParams = LinearLayout.LayoutParams(
                     0,
@@ -607,13 +989,6 @@ class MainActivity : AppCompatActivity() {
         })
 
         container.addView(settingRow(
-            "Audio Track Switcher",
-            "Video chalne par top bar me 'Audio' button se tracks badlein"
-        ) {
-            cycleAudioTrack()
-        })
-
-        container.addView(settingRow(
             "Double-Tap Seek (±10s)",
             "Player ke right side double-tap = +10s, left side = -10s"
         ) {
@@ -635,8 +1010,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyTheme() {
-        val bg = if (isDarkMode) Color.parseColor("#111111") else Color.parseColor("#FFFFFF")
-        val barBg = if (isDarkMode) Color.parseColor("#1C1C1E") else Color.parseColor("#F4F4F5")
+        val bg = if (isDarkMode) Color.parseColor("#121212") else Color.parseColor("#FFFFFF")
+        val barBg = if (isDarkMode) Color.parseColor("#1E1E20") else Color.parseColor("#F5F5F7")
         val fg = primaryTextColor()
         val btnBg = if (isDarkMode) Color.parseColor("#2C2C2E") else Color.parseColor("#E4E4E7")
 
@@ -645,10 +1020,8 @@ class MainActivity : AppCompatActivity() {
         topHeaderTitle.setTextColor(fg)
         bottomNavBar.setBackgroundColor(barBg)
 
-        for (btn in listOf(topThemeBtn, audioSwitchBtn)) {
-            btn.setBackgroundColor(btnBg)
-            btn.setTextColor(fg)
-        }
+        topThemeBtn.setBackgroundColor(btnBg)
+        topThemeBtn.setTextColor(fg)
         topThemeBtn.text = if (isDarkMode) "Light" else "Dark"
 
         for (i in 0 until bottomNavBar.childCount) {
@@ -667,6 +1040,7 @@ class MainActivity : AppCompatActivity() {
     private fun renderCurrentTab() {
         if (activeTab == "More") {
             mainRecycler.visibility = View.GONE
+            fabPlayAll.visibility = View.GONE
             settingsScroll.visibility = View.VISIBLE
             reloadSettingsContent()
             return
@@ -674,12 +1048,13 @@ class MainActivity : AppCompatActivity() {
 
         settingsScroll.visibility = View.GONE
         mainRecycler.visibility = View.VISIBLE
+        fabPlayAll.visibility = if (activeTab == "Video") View.VISIBLE else View.GONE
 
         when (activeTab) {
             "Video" -> {
-                topHeaderTitle.text = "Videos (${allVideos.size})"
+                topHeaderTitle.text = "HKR Player"
                 mainRecycler.layoutManager = GridLayoutManager(this, 2)
-                mainRecycler.adapter = MediaGridAdapter(allVideos, currentPlayingIndex) { idx ->
+                mainRecycler.adapter = MediaGridAdapter(allVideos) { idx ->
                     playFromList(allVideos, idx)
                 }
             }
@@ -691,20 +1066,20 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             "Browse" -> {
-                topHeaderTitle.text = "Browse Folders (${folderMap.size})"
+                topHeaderTitle.text = "Browse (${folderMap.size})"
                 val folders = folderMap.keys.toList()
                 mainRecycler.layoutManager = GridLayoutManager(this, 2)
                 mainRecycler.adapter = FoldersAdapter(folders) { folderName ->
                     val list = folderMap[folderName].orEmpty()
                     topHeaderTitle.text = "$folderName (${list.size})"
                     mainRecycler.layoutManager = GridLayoutManager(this, 2)
-                    mainRecycler.adapter = MediaGridAdapter(list, -1) { idx ->
+                    mainRecycler.adapter = MediaGridAdapter(list) { idx ->
                         playFromList(list, idx)
                     }
                 }
             }
             "Playlists" -> {
-                topHeaderTitle.text = "History & Queue (${historyList.size})"
+                topHeaderTitle.text = "Playlists & History (${historyList.size})"
                 mainRecycler.layoutManager = LinearLayoutManager(this)
                 mainRecycler.adapter = MediaListAdapter(historyList) { idx ->
                     playFromList(historyList, idx)
@@ -841,79 +1216,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun playFromList(list: List<MediaEntry>, index: Int) {
-        if (index !in list.indices) return
-        currentQueue = list
-        currentPlayingIndex = index
-        currentAudioTrackIdx = 0
-        val item = list[index]
-
-        if (saveHistoryEnabled) {
-            historyList.removeAll { it.uri == item.uri }
-            historyList.add(0, item)
-        }
-
-        playerBox.visibility = View.VISIBLE
-        audioSwitchBtn.visibility = if (item.isAudio) View.GONE else View.VISIBLE
-        audioSwitchBtn.text = "Audio"
-        topHeaderTitle.text = item.title
-
-        videoView.setVideoURI(item.uri)
-        videoView.setOnPreparedListener { mp ->
-            mediaPlayerRef = mp
-            mp.start()
-            mediaController?.show(4000)
-        }
-        videoView.start()
-    }
-
-    private fun playPrevious() {
-        if (currentPlayingIndex > 0) {
-            playFromList(currentQueue, currentPlayingIndex - 1)
-        }
-    }
-
-    private fun playNext() {
-        if (currentPlayingIndex + 1 < currentQueue.size) {
-            playFromList(currentQueue, currentPlayingIndex + 1)
-        }
-    }
-
-    private fun seekBy(deltaMs: Int) {
-        val target = (videoView.currentPosition + deltaMs).coerceIn(0, videoView.duration.coerceAtLeast(0))
-        videoView.seekTo(target)
-        skipHudText.text = if (deltaMs > 0) "+10s ⏭" else "⏮ -10s"
-        skipHudText.visibility = View.VISIBLE
-        mainHandler.removeCallbacks(hideSkipRunnable)
-        mainHandler.postDelayed(hideSkipRunnable, 700)
-    }
-
-    private fun cycleAudioTrack() {
-        val mp = mediaPlayerRef ?: return
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN) return
-        val tracks = mp.trackInfo ?: return
-        val audioIndices = tracks.mapIndexedNotNull { idx, info ->
-            if (info.trackType == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO) idx else null
-        }
-        if (audioIndices.size <= 1) {
-            skipHudText.text = "Single Audio Track"
-            skipHudText.visibility = View.VISIBLE
-            mainHandler.removeCallbacks(hideSkipRunnable)
-            mainHandler.postDelayed(hideSkipRunnable, 900)
-            return
-        }
-        currentAudioTrackIdx = (currentAudioTrackIdx + 1) % audioIndices.size
-        val selected = audioIndices[currentAudioTrackIdx]
-        mp.selectTrack(selected)
-        val lang = tracks[selected].language?.uppercase().orEmpty()
-        val label = if (lang.isNotBlank()) "Audio: $lang" else "Audio ${currentAudioTrackIdx + 1}/${audioIndices.size}"
-        audioSwitchBtn.text = label
-        skipHudText.text = label
-        skipHudText.visibility = View.VISIBLE
-        mainHandler.removeCallbacks(hideSkipRunnable)
-        mainHandler.postDelayed(hideSkipRunnable, 1000)
-    }
-
     private fun formatDuration(ms: Long): String {
         val totalSec = (ms / 1000).coerceAtLeast(0)
         val hrs = totalSec / 3600
@@ -922,7 +1224,7 @@ class MainActivity : AppCompatActivity() {
         return if (hrs > 0) {
             String.format("%d:%02d:%02d", hrs, mins, secs)
         } else {
-            String.format("%02d:%02d", mins, secs)
+            String.format("%d:%02d", mins, secs)
         }
     }
 
@@ -943,7 +1245,7 @@ class MainActivity : AppCompatActivity() {
             var bmp: Bitmap? = null
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    bmp = contentResolver.loadThumbnail(item.uri, android.util.Size(dp(240), dp(160)), null)
+                    bmp = contentResolver.loadThumbnail(item.uri, android.util.Size(dp(260), dp(160)), null)
                 }
             } catch (_: Exception) {
             }
@@ -973,35 +1275,29 @@ class MainActivity : AppCompatActivity() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-    override fun onPause() {
-        super.onPause()
-        mediaController?.hide()
-    }
-
     inner class MediaGridAdapter(
         private val items: List<MediaEntry>,
-        private val activeIdx: Int,
         private val onClick: (Int) -> Unit
     ) : RecyclerView.Adapter<MediaGridAdapter.VH>() {
 
         inner class VH(v: View) : RecyclerView.ViewHolder(v) {
             val thumb: ImageView = v.findViewById(11)
             val quality: TextView = v.findViewById(12)
-            val title: TextView = v.findViewById(13)
-            val dur: TextView = v.findViewById(14)
-            val border: View = v.findViewById(15)
+            val menuBtn: ImageView = v.findViewById(13)
+            val title: TextView = v.findViewById(14)
+            val dur: TextView = v.findViewById(15)
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
             val card = LinearLayout(parent.context).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(5), dp(5), dp(5), dp(10))
+                setPadding(dp(5), dp(5), dp(5), dp(12))
             }
 
             val frame = FrameLayout(parent.context).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    dp(105)
+                    dp(106)
                 )
             }
 
@@ -1019,43 +1315,40 @@ class MainActivity : AppCompatActivity() {
                 id = 12
                 textSize = 10f
                 setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#AA000000"))
-                setPadding(dp(5), dp(2), dp(5), dp(2))
+                setBackgroundColor(Color.parseColor("#B3000000"))
+                setPadding(dp(6), dp(2), dp(6), dp(2))
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     Gravity.TOP or Gravity.START
                 ).apply {
-                    setMargins(dp(5), dp(5), dp(5), dp(5))
+                    setMargins(dp(6), dp(6), dp(6), dp(6))
                 }
             }
 
-            val activeRing = View(parent.context).apply {
-                id = 15
-                background = GradientDrawable().apply {
-                    setStroke(dp(3), Color.parseColor("#FF8800"))
+            val dots = ImageView(parent.context).apply {
+                id = 13
+                setImageResource(android.R.drawable.ic_menu_more)
+                setColorFilter(Color.WHITE)
+                layoutParams = FrameLayout.LayoutParams(dp(24), dp(24), Gravity.TOP or Gravity.END).apply {
+                    setMargins(dp(4), dp(6), dp(4), dp(4))
                 }
-                visibility = View.GONE
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
             }
 
             frame.addView(img)
-            frame.addView(activeRing)
             frame.addView(qTag)
+            frame.addView(dots)
 
             val tView = TextView(parent.context).apply {
-                id = 13
+                id = 14
                 textSize = 13f
                 maxLines = 1
                 setTextColor(primaryTextColor())
-                setPadding(0, dp(5), 0, dp(1))
+                setPadding(0, dp(6), 0, dp(2))
             }
 
             val dView = TextView(parent.context).apply {
-                id = 14
+                id = 15
                 textSize = 11f
                 setTextColor(secondaryTextColor())
             }
@@ -1074,8 +1367,16 @@ class MainActivity : AppCompatActivity() {
             holder.dur.setTextColor(secondaryTextColor())
             holder.quality.text = item.qualityTag
             holder.quality.visibility = if (item.qualityTag.isNotBlank()) View.VISIBLE else View.GONE
-            holder.border.visibility = if (position == activeIdx) View.VISIBLE else View.GONE
             loadThumbnail(item, holder.thumb)
+
+            holder.menuBtn.setOnClickListener {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle(item.title)
+                    .setItems(arrayOf("Play Video", "Folder: ${item.folderName}")) { _, which ->
+                        if (which == 0) onClick(position)
+                    }
+                    .show()
+            }
             holder.itemView.setOnClickListener { onClick(position) }
         }
 
@@ -1102,14 +1403,14 @@ class MainActivity : AppCompatActivity() {
                 id = 21
                 scaleType = ImageView.ScaleType.CENTER_CROP
                 setBackgroundColor(Color.parseColor("#242426"))
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(105))
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(106))
             }
             val nView = TextView(parent.context).apply {
                 id = 22
                 textSize = 14f
                 maxLines = 1
                 setTextColor(primaryTextColor())
-                setPadding(0, dp(5), 0, 0)
+                setPadding(0, dp(6), 0, 0)
             }
             val cView = TextView(parent.context).apply {
                 id = 23
@@ -1149,7 +1450,7 @@ class MainActivity : AppCompatActivity() {
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
             val row = LinearLayout(parent.context).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(12), dp(10), dp(12), dp(10))
+                setPadding(dp(14), dp(11), dp(14), dp(11))
             }
             val t = TextView(parent.context).apply {
                 id = 31
