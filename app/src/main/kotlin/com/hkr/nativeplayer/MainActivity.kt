@@ -4,7 +4,9 @@ import android.Manifest
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -24,8 +26,10 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -40,6 +44,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -78,6 +85,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var topThemeBtn: Button
     private lateinit var contentContainer: FrameLayout
     private lateinit var mainRecycler: RecyclerView
+    private lateinit var moreHubScroll: ScrollView
     private lateinit var settingsScroll: ScrollView
     private lateinit var fabPlayAll: ImageButton
     private lateinit var bottomNavBar: LinearLayout
@@ -85,10 +93,13 @@ class MainActivity : AppCompatActivity() {
     // Full-screen / VLC-style Player Overlay
     private lateinit var playerOverlay: FrameLayout
     private lateinit var videoView: VideoView
+    private lateinit var playerTopBar: LinearLayout
     private lateinit var playerTitleText: TextView
+    private lateinit var rotateScreenBtn: ImageButton
     private lateinit var centerHudText: TextView
     private lateinit var centerHudSubText: TextView
     private lateinit var centerHudBox: LinearLayout
+    private lateinit var playerBottomControls: LinearLayout
     private lateinit var currentTimeText: TextView
     private lateinit var totalTimeText: TextView
     private lateinit var playerSeekBar: SeekBar
@@ -115,6 +126,7 @@ class MainActivity : AppCompatActivity() {
     private var aspectModeIndex: Int = 0
     private var playbackSpeed: Float = 1.0f
     private var isPlayerVisible: Boolean = false
+    private var isLandscapeLocked: Boolean = false
 
     private val aspectModes = listOf("Fit", "16:9", "4:3", "Fill")
 
@@ -218,7 +230,19 @@ class MainActivity : AppCompatActivity() {
             clipToPadding = false
         }
 
-        settingsScroll = buildSettingsView().apply {
+        moreHubScroll = ScrollView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            visibility = View.GONE
+        }
+
+        settingsScroll = ScrollView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
             visibility = View.GONE
         }
 
@@ -243,6 +267,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         contentContainer.addView(mainRecycler)
+        contentContainer.addView(moreHubScroll)
         contentContainer.addView(settingsScroll)
         contentContainer.addView(fabPlayAll)
 
@@ -266,6 +291,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(outerContainer)
 
         applyTheme()
+        updateSystemUiForPlayer()
 
         if (onboardingDone) {
             if (hasMediaPermission()) {
@@ -280,6 +306,40 @@ class MainActivity : AppCompatActivity() {
         }
 
         mainHandler.post(progressRunnable)
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (isPlayerVisible) {
+            applyAspectRatio()
+        }
+    }
+
+    private fun updateSystemUiForPlayer() {
+        WindowCompat.setDecorFitsSystemWindows(window, !isPlayerVisible)
+        val controller = WindowInsetsControllerCompat(window, playerOverlay)
+        if (isPlayerVisible) {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    private fun toggleLandscapeFullScreen() {
+        isLandscapeLocked = !isLandscapeLocked
+        requestedOrientation = if (isLandscapeLocked) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+        showHud(
+            if (isLandscapeLocked) "Full Screen" else "Portrait",
+            if (isLandscapeLocked) "Landscape mode" else "Vertical mode"
+        )
     }
 
     private fun buildPlayerOverlay(): FrameLayout {
@@ -320,18 +380,47 @@ class MainActivity : AppCompatActivity() {
             false
         }
 
-        playerTitleText = TextView(this).apply {
-            textSize = 15f
-            maxLines = 1
-            setTextColor(Color.WHITE)
+        playerTopBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(Color.parseColor("#88000000"))
-            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setPadding(dp(12), dp(8), dp(12), dp(8))
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP
             )
         }
+
+        val backBtn = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_menu_revert)
+            setColorFilter(Color.WHITE)
+            setBackgroundColor(Color.TRANSPARENT)
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+            setOnClickListener { closePlayerOverlay() }
+        }
+
+        playerTitleText = TextView(this).apply {
+            textSize = 15f
+            maxLines = 1
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(8)
+                marginEnd = dp(8)
+            }
+        }
+
+        rotateScreenBtn = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_menu_always_landscape_portrait)
+            setColorFilter(Color.parseColor("#FF8800"))
+            setBackgroundColor(Color.TRANSPARENT)
+            layoutParams = LinearLayout.LayoutParams(dp(42), dp(42))
+            setOnClickListener { toggleLandscapeFullScreen() }
+        }
+
+        playerTopBar.addView(backBtn)
+        playerTopBar.addView(playerTitleText)
+        playerTopBar.addView(rotateScreenBtn)
 
         centerHudBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -367,7 +456,7 @@ class MainActivity : AppCompatActivity() {
         centerHudBox.addView(centerHudText)
         centerHudBox.addView(centerHudSubText)
 
-        val bottomControls = LinearLayout(this).apply {
+        playerBottomControls = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor("#B3000000"))
             setPadding(dp(14), dp(10), dp(14), dp(14))
@@ -502,8 +591,8 @@ class MainActivity : AppCompatActivity() {
         actionsRow.addView(aspectRatioBtn)
         actionsRow.addView(moreOptionsBtn)
 
-        bottomControls.addView(timeRow)
-        bottomControls.addView(actionsRow)
+        playerBottomControls.addView(timeRow)
+        playerBottomControls.addView(actionsRow)
 
         videoView.setOnCompletionListener {
             if (repeatEnabled && currentPlayingIndex in currentQueue.indices) {
@@ -516,17 +605,17 @@ class MainActivity : AppCompatActivity() {
         }
 
         box.addView(videoView)
-        box.addView(playerTitleText)
+        box.addView(playerTopBar)
         box.addView(centerHudBox)
-        box.addView(bottomControls)
+        box.addView(playerBottomControls)
         return box
     }
 
-    private fun cycleAspectRatio() {
-        aspectModeIndex = (aspectModeIndex + 1) % aspectModes.size
+    private fun applyAspectRatio() {
         val mode = aspectModes[aspectModeIndex]
-        val parentW = playerOverlay.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
-        val parentH = playerOverlay.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val dm = resources.displayMetrics
+        val parentW = playerOverlay.width.takeIf { it > 0 } ?: dm.widthPixels
+        val parentH = playerOverlay.height.takeIf { it > 0 } ?: dm.heightPixels
 
         val params = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -557,11 +646,17 @@ class MainActivity : AppCompatActivity() {
         aspectRatioBtn.setColorFilter(
             if (mode == "Fit") Color.WHITE else Color.parseColor("#FF8800")
         )
-        showHud(mode, "Long tap for more options")
+    }
+
+    private fun cycleAspectRatio() {
+        aspectModeIndex = (aspectModeIndex + 1) % aspectModes.size
+        applyAspectRatio()
+        showHud(aspectModes[aspectModeIndex], "Long tap for more options")
     }
 
     private fun showPlayerMoreDialog() {
         val options = arrayOf(
+            if (isLandscapeLocked) "Switch to Portrait" else "Switch to Landscape Full Screen",
             "Playback Speed (${playbackSpeed}x)",
             "Audio Track Switch",
             "Previous Episode",
@@ -572,11 +667,12 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Player Options")
             .setItems(options) { _, which ->
                 when (which) {
-                    0 -> cyclePlaybackSpeed()
-                    1 -> cycleAudioTrack()
-                    2 -> if (currentPlayingIndex > 0) playFromList(currentQueue, currentPlayingIndex - 1)
-                    3 -> if (currentPlayingIndex + 1 < currentQueue.size) playFromList(currentQueue, currentPlayingIndex + 1)
-                    4 -> closePlayerOverlay()
+                    0 -> toggleLandscapeFullScreen()
+                    1 -> cyclePlaybackSpeed()
+                    2 -> cycleAudioTrack()
+                    3 -> if (currentPlayingIndex > 0) playFromList(currentQueue, currentPlayingIndex - 1)
+                    4 -> if (currentPlayingIndex + 1 < currentQueue.size) playFromList(currentQueue, currentPlayingIndex + 1)
+                    5 -> closePlayerOverlay()
                 }
             }
             .show()
@@ -647,9 +743,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         isPlayerVisible = true
+        updateSystemUiForPlayer()
         playerOverlay.visibility = View.VISIBLE
         playerTitleText.text = item.title
         playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
+        applyAspectRatio()
+
         videoView.setVideoURI(item.uri)
         videoView.setOnPreparedListener { mp ->
             mediaPlayerRef = mp
@@ -666,6 +765,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun closePlayerOverlay() {
         isPlayerVisible = false
+        isLandscapeLocked = false
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        updateSystemUiForPlayer()
         videoView.stopPlayback()
         playerOverlay.visibility = View.GONE
         renderCurrentTab()
@@ -674,6 +776,10 @@ class MainActivity : AppCompatActivity() {
     override fun onBackPressed() {
         if (isPlayerVisible) {
             closePlayerOverlay()
+        } else if (activeTab == "More" && settingsScroll.visibility == View.VISIBLE) {
+            settingsScroll.visibility = View.GONE
+            moreHubScroll.visibility = View.VISIBLE
+            topHeaderTitle.text = "HKR Player"
         } else {
             super.onBackPressed()
         }
@@ -684,6 +790,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun secondaryTextColor(): Int =
         if (isDarkMode) Color.parseColor("#A1A1AA") else Color.parseColor("#52525B")
+
+    private fun cardBgColor(): Int =
+        if (isDarkMode) Color.parseColor("#1E1E22") else Color.parseColor("#F3F4F6")
 
     private fun buildOnboardingView(): LinearLayout {
         val box = LinearLayout(this).apply {
@@ -845,7 +954,7 @@ class MainActivity : AppCompatActivity() {
         when (onboardStep) {
             0 -> {
                 onboardTitle.text = "Welcome to HKR Player!"
-                onboardDesc.text = "Local videos, folders, double-tap ±10s skip, aspect ratio switch aur dark/light theme ke saath fast media player."
+                onboardDesc.text = "Local videos, folders, landscape full screen, double-tap ±10s skip aur dark/light theme ke saath media player."
                 onboardAutoScanRow.visibility = View.GONE
                 onboardPermActionBtn.visibility = View.GONE
                 onboardNextBtn.text = "NEXT"
@@ -905,6 +1014,171 @@ class MainActivity : AppCompatActivity() {
         return bar
     }
 
+    private fun buildMoreHubContent(): LinearLayout {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(28))
+        }
+
+        val topButtonsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(18)
+            }
+        }
+
+        val settingsBtn = Button(this).apply {
+            text = "SETTINGS"
+            textSize = 13f
+            setTextColor(Color.parseColor("#FF8800"))
+            setBackgroundColor(cardBgColor())
+            layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f).apply {
+                marginEnd = dp(8)
+            }
+            setOnClickListener {
+                moreHubScroll.visibility = View.GONE
+                settingsScroll.visibility = View.VISIBLE
+                topHeaderTitle.text = "Settings"
+                reloadSettingsContent()
+            }
+        }
+
+        val aboutBtn = Button(this).apply {
+            text = "ABOUT"
+            textSize = 13f
+            setTextColor(Color.parseColor("#FF8800"))
+            setBackgroundColor(cardBgColor())
+            layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f).apply {
+                marginStart = dp(8)
+            }
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("HKR Player")
+                    .setMessage("Native Android Media Player\nVideos: ${allVideos.size} • Audio: ${allAudios.size}\nFolders: ${folderMap.size}")
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+        }
+
+        topButtonsRow.addView(settingsBtn)
+        topButtonsRow.addView(aboutBtn)
+        container.addView(topButtonsRow)
+
+        val streamTitle = TextView(this).apply {
+            text = "Streams"
+            textSize = 16f
+            setTextColor(Color.parseColor("#FF8800"))
+            setPadding(0, dp(4), 0, dp(10))
+        }
+        container.addView(streamTitle)
+
+        val newStreamCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(cardBgColor())
+            setPadding(dp(16), dp(24), dp(16), dp(24))
+            isClickable = true
+            layoutParams = LinearLayout.LayoutParams(dp(145), dp(130)).apply {
+                bottomMargin = dp(20)
+            }
+            setOnClickListener { showStreamUrlDialog() }
+        }
+
+        val plusText = TextView(this).apply {
+            text = "+"
+            textSize = 28f
+            setTextColor(Color.parseColor("#FF8800"))
+        }
+        val streamLabel = TextView(this).apply {
+            text = "New stream"
+            textSize = 13f
+            setTextColor(primaryTextColor())
+        }
+        newStreamCard.addView(plusText)
+        newStreamCard.addView(streamLabel)
+        container.addView(newStreamCard)
+
+        val historyTitle = TextView(this).apply {
+            text = "History (${historyList.size})"
+            textSize = 16f
+            setTextColor(Color.parseColor("#FF8800"))
+            setPadding(0, dp(4), 0, dp(10))
+        }
+        container.addView(historyTitle)
+
+        if (historyList.isEmpty()) {
+            val emptyHistory = TextView(this).apply {
+                text = "Abhi tak koi media play nahi hua."
+                textSize = 13f
+                setTextColor(secondaryTextColor())
+            }
+            container.addView(emptyHistory)
+        } else {
+            for ((idx, item) in historyList.take(8).withIndex()) {
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setBackgroundColor(cardBgColor())
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    isClickable = true
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        bottomMargin = dp(8)
+                    }
+                    setOnClickListener { playFromList(historyList, idx) }
+                }
+                val t = TextView(this).apply {
+                    text = item.title
+                    textSize = 14f
+                    maxLines = 1
+                    setTextColor(primaryTextColor())
+                }
+                val s = TextView(this).apply {
+                    text = "${item.folderName} • ${formatDuration(item.durationMs)}"
+                    textSize = 11f
+                    setTextColor(secondaryTextColor())
+                }
+                row.addView(t)
+                row.addView(s)
+                container.addView(row)
+            }
+        }
+
+        return container
+    }
+
+    private fun showStreamUrlDialog() {
+        val input = EditText(this).apply {
+            hint = "https://example.com/video.mp4"
+            setTextColor(primaryTextColor())
+            setHintTextColor(secondaryTextColor())
+        }
+        AlertDialog.Builder(this)
+            .setTitle("New Stream URL")
+            .setView(input)
+            .setPositiveButton("Play") { _, _ ->
+                val url = input.text.toString().trim()
+                if (url.isNotEmpty()) {
+                    val entry = MediaEntry(
+                        title = url.substringAfterLast('/').ifBlank { "Network Stream" },
+                        uri = Uri.parse(url),
+                        folderName = "Stream",
+                        filePath = null,
+                        durationMs = 0L,
+                        qualityTag = "URL",
+                        isAudio = false
+                    )
+                    playFromList(listOf(entry), 0)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun buildSettingsView(): ScrollView {
         val scroll = ScrollView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
@@ -915,14 +1189,14 @@ class MainActivity : AppCompatActivity() {
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(24))
+            setPadding(dp(16), dp(14), dp(16), dp(28))
         }
 
         fun sectionTitle(label: String): TextView = TextView(this).apply {
             text = label
             textSize = 14f
             setTextColor(Color.parseColor("#FF8800"))
-            setPadding(0, dp(12), 0, dp(6))
+            setPadding(0, dp(14), 0, dp(6))
         }
 
         fun settingRow(title: String, subtitle: String, onClick: () -> Unit): LinearLayout =
@@ -946,7 +1220,31 @@ class MainActivity : AppCompatActivity() {
                 addView(s)
             }
 
-        container.addView(sectionTitle("Interface & Media"))
+        container.addView(sectionTitle("Media library"))
+        container.addView(settingRow(
+            "Media library folders",
+            "${folderMap.size} folders detected • Tap to rescan"
+        ) {
+            if (hasMediaPermission()) {
+                scanDeviceMedia()
+                Toast.makeText(this, "Media rescanned (${allVideos.size} videos)", Toast.LENGTH_SHORT).show()
+            } else {
+                requestNeededPermissions()
+            }
+        })
+
+        val autoScanCheck = CheckBox(this).apply {
+            text = "Auto rescan on startup"
+            isChecked = autoScanEnabled
+            setTextColor(primaryTextColor())
+            setOnCheckedChangeListener { _, checked ->
+                autoScanEnabled = checked
+                prefs.edit().putBoolean("auto_scan", checked).apply()
+            }
+        }
+        container.addView(autoScanCheck)
+
+        container.addView(sectionTitle("Interface & Video"))
         val themeLabel = if (isDarkMode) "Theme: Dark Mode" else "Theme: Light Mode"
         container.addView(settingRow(
             themeLabel,
@@ -958,19 +1256,23 @@ class MainActivity : AppCompatActivity() {
             reloadSettingsContent()
         })
 
-        val autoScanCheck = CheckBox(this).apply {
-            text = "Auto rescan media on startup"
-            isChecked = autoScanEnabled
-            setTextColor(primaryTextColor())
-            setOnCheckedChangeListener { _, checked ->
-                autoScanEnabled = checked
-                prefs.edit().putBoolean("auto_scan", checked).apply()
-            }
-        }
-        container.addView(autoScanCheck)
+        container.addView(settingRow(
+            "Video screen orientation",
+            if (isLandscapeLocked) "Landscape full screen" else "Automatic / Portrait"
+        ) {
+            toggleLandscapeFullScreen()
+        })
 
+        container.addView(settingRow(
+            "All files access",
+            "Device ke sabhi folders/files access karne ki setting kholein"
+        ) {
+            openAllFilesAccessSettings()
+        })
+
+        container.addView(sectionTitle("History"))
         val historyCheck = CheckBox(this).apply {
-            text = "Playback history (Playlists tab mein save karein)"
+            text = "Playback history"
             isChecked = saveHistoryEnabled
             setTextColor(primaryTextColor())
             setOnCheckedChangeListener { _, checked ->
@@ -980,19 +1282,12 @@ class MainActivity : AppCompatActivity() {
         }
         container.addView(historyCheck)
 
-        container.addView(sectionTitle("Video, Audio & Subtitles"))
         container.addView(settingRow(
-            "All files access",
-            "Device ke sabhi folders/files scan karne ki setting kholein"
+            "Clear playback history",
+            "Saved history list saaf karein"
         ) {
-            openAllFilesAccessSettings()
-        })
-
-        container.addView(settingRow(
-            "Double-Tap Seek (±10s)",
-            "Player ke right side double-tap = +10s, left side = -10s"
-        ) {
-            Toast.makeText(this, "Player ke left/right side double-tap karein", Toast.LENGTH_SHORT).show()
+            historyList.clear()
+            Toast.makeText(this, "History cleared", Toast.LENGTH_SHORT).show()
         })
 
         scroll.addView(container)
@@ -1007,6 +1302,12 @@ class MainActivity : AppCompatActivity() {
         if (inner != null) {
             settingsScroll.addView(inner)
         }
+    }
+
+    private fun reloadMoreHubContent() {
+        val inner = buildMoreHubContent()
+        moreHubScroll.removeAllViews()
+        moreHubScroll.addView(inner)
     }
 
     private fun applyTheme() {
@@ -1041,11 +1342,14 @@ class MainActivity : AppCompatActivity() {
         if (activeTab == "More") {
             mainRecycler.visibility = View.GONE
             fabPlayAll.visibility = View.GONE
-            settingsScroll.visibility = View.VISIBLE
-            reloadSettingsContent()
+            settingsScroll.visibility = View.GONE
+            moreHubScroll.visibility = View.VISIBLE
+            topHeaderTitle.text = "HKR Player"
+            reloadMoreHubContent()
             return
         }
 
+        moreHubScroll.visibility = View.GONE
         settingsScroll.visibility = View.GONE
         mainRecycler.visibility = View.VISIBLE
         fabPlayAll.visibility = if (activeTab == "Video") View.VISIBLE else View.GONE
@@ -1170,6 +1474,7 @@ class MainActivity : AppCompatActivity() {
                 val dur = c.getLong(durCol)
                 val h = c.getInt(hCol)
                 val quality = when {
+                    h >= 4320 -> "8K"
                     h >= 2160 -> "4K"
                     h >= 1080 -> "1080p"
                     h >= 720 -> "720p"
