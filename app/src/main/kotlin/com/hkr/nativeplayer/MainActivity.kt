@@ -6,9 +6,16 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorFilter
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
@@ -149,6 +156,11 @@ class MainActivity : AppCompatActivity() {
                 playerSeekBar.progress = pos
                 currentTimeText.text = formatDuration(pos.toLong())
                 totalTimeText.text = formatDuration(dur.toLong())
+                if (::playPauseBtn.isInitialized) {
+                    playPauseBtn.setImageDrawable(
+                        makeVlcIconDrawable(if (videoView.isPlaying) "pause" else "play", Color.WHITE)
+                    )
+                }
             }
             mainHandler.postDelayed(this, 500)
         }
@@ -342,6 +354,157 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private fun styleSeekBarVlc(seekBar: SeekBar) {
+        val orange = Color.parseColor("#FF8800")
+        val trackBg = Color.parseColor("#555558")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            seekBar.progressTintList = ColorStateList.valueOf(orange)
+            seekBar.thumbTintList = ColorStateList.valueOf(orange)
+            seekBar.progressBackgroundTintList = ColorStateList.valueOf(trackBg)
+            seekBar.secondaryProgressTintList = ColorStateList.valueOf(Color.TRANSPARENT)
+        }
+        val thumbSize = dp(16)
+        seekBar.thumb = object : Drawable() {
+            private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = orange
+                style = Paint.Style.FILL
+            }
+
+            override fun draw(canvas: Canvas) {
+                val r = bounds.width().coerceAtMost(bounds.height()) / 2f
+                canvas.drawCircle(bounds.exactCenterX(), bounds.exactCenterY(), r, paint)
+            }
+
+            override fun setAlpha(alpha: Int) {
+                paint.alpha = alpha
+            }
+
+            override fun setColorFilter(cf: ColorFilter?) {
+                paint.colorFilter = cf
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+            override fun getIntrinsicWidth(): Int = thumbSize
+            override fun getIntrinsicHeight(): Int = thumbSize
+        }
+    }
+
+    private fun makeVlcIconDrawable(kind: String, tintColor: Int): Drawable {
+        val size = dp(48)
+        return object : Drawable() {
+            private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = tintColor
+                style = Paint.Style.STROKE
+                strokeWidth = dp(2.2f).toFloat()
+                strokeCap = Paint.Cap.ROUND
+                strokeJoin = Paint.Join.ROUND
+            }
+            private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = tintColor
+                style = Paint.Style.FILL
+            }
+
+            override fun draw(canvas: Canvas) {
+                val cx = bounds.exactCenterX()
+                val cy = bounds.exactCenterY()
+                when (kind) {
+                    "track" -> {
+                        val w = dp(24).toFloat()
+                        val h = dp(17).toFloat()
+                        val l = cx - w / 2f
+                        val t = cy - h / 2f
+                        canvas.drawRoundRect(l, t, l + w, t + h, dp(3f).toFloat(), dp(3f).toFloat(), strokePaint)
+                        canvas.drawLine(l + dp(4), t + dp(9), l + dp(11), t + dp(9), strokePaint)
+                        canvas.drawLine(l + dp(14), t + dp(9), l + w - dp(4), t + dp(9), strokePaint)
+                        canvas.drawLine(l + dp(4), t + dp(13), l + dp(15), t + dp(13), strokePaint)
+                        canvas.drawLine(l + dp(18), t + dp(13), l + w - dp(4), t + dp(13), strokePaint)
+                    }
+                    "repeat" -> {
+                        val r = dp(9).toFloat()
+                        canvas.drawLine(cx - r, cy - dp(4), cx + r, cy - dp(4), strokePaint)
+                        canvas.drawLine(cx + r - dp(4), cy - dp(8), cx + r, cy - dp(4), strokePaint)
+                        canvas.drawLine(cx + r - dp(4), cy, cx + r, cy - dp(4), strokePaint)
+
+                        canvas.drawLine(cx + r, cy + dp(4), cx - r, cy + dp(4), strokePaint)
+                        canvas.drawLine(cx - r + dp(4), cy, cx - r, cy + dp(4), strokePaint)
+                        canvas.drawLine(cx - r + dp(4), cy + dp(8), cx - r, cy + dp(4), strokePaint)
+                    }
+                    "pause" -> {
+                        val rad = dp(23).toFloat()
+                        canvas.drawCircle(cx, cy, rad, strokePaint)
+                        val barW = dp(3.5f).toFloat()
+                        val barH = dp(15).toFloat()
+                        canvas.drawRect(
+                            cx - dp(6.5f).toFloat(),
+                            cy - barH / 2f,
+                            cx - dp(6.5f).toFloat() + barW,
+                            cy + barH / 2f,
+                            fillPaint
+                        )
+                        canvas.drawRect(
+                            cx + dp(3f).toFloat(),
+                            cy - barH / 2f,
+                            cx + dp(3f).toFloat() + barW,
+                            cy + barH / 2f,
+                            fillPaint
+                        )
+                    }
+                    "play" -> {
+                        val rad = dp(23).toFloat()
+                        canvas.drawCircle(cx, cy, rad, strokePaint)
+                        val path = Path().apply {
+                            moveTo(cx - dp(5).toFloat(), cy - dp(8).toFloat())
+                            lineTo(cx + dp(9).toFloat(), cy)
+                            lineTo(cx - dp(5).toFloat(), cy + dp(8).toFloat())
+                            close()
+                        }
+                        canvas.drawPath(path, fillPaint)
+                    }
+                    "ratio" -> {
+                        val w = dp(24).toFloat()
+                        val h = dp(17).toFloat()
+                        val l = cx - w / 2f
+                        val t = cy - h / 2f
+                        val r = l + w
+                        val b = t + h
+                        val c = dp(5).toFloat()
+                        canvas.drawLine(l, t + c, l, t, strokePaint)
+                        canvas.drawLine(l, t, l + c, t, strokePaint)
+                        canvas.drawLine(r - c, t, r, t, strokePaint)
+                        canvas.drawLine(r, t, r, t + c, strokePaint)
+                        canvas.drawLine(l, b - c, l, b, strokePaint)
+                        canvas.drawLine(l, b, l + c, b, strokePaint)
+                        canvas.drawLine(r - c, b, r, b, strokePaint)
+                        canvas.drawLine(r, b, r, b - c, strokePaint)
+                    }
+                    "more" -> {
+                        val dotR = dp(2.2f).toFloat()
+                        val gap = dp(7).toFloat()
+                        canvas.drawCircle(cx - gap, cy, dotR, fillPaint)
+                        canvas.drawCircle(cx, cy, dotR, fillPaint)
+                        canvas.drawCircle(cx + gap, cy, dotR, fillPaint)
+                    }
+                }
+            }
+
+            override fun setAlpha(alpha: Int) {
+                strokePaint.alpha = alpha
+                fillPaint.alpha = alpha
+            }
+
+            override fun setColorFilter(cf: ColorFilter?) {
+                strokePaint.colorFilter = cf
+                fillPaint.colorFilter = cf
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+            override fun getIntrinsicWidth(): Int = size
+            override fun getIntrinsicHeight(): Int = size
+        }
+    }
+
     private fun buildPlayerOverlay(): FrameLayout {
         val box = FrameLayout(this).apply {
             layoutParams = FrameLayout.LayoutParams(
@@ -458,8 +621,8 @@ class MainActivity : AppCompatActivity() {
 
         playerBottomControls = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#B3000000"))
-            setPadding(dp(14), dp(10), dp(14), dp(14))
+            setBackgroundColor(Color.parseColor("#B8000000"))
+            setPadding(dp(16), dp(8), dp(16), dp(16))
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -470,19 +633,40 @@ class MainActivity : AppCompatActivity() {
         val timeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(4)
+            }
         }
 
         currentTimeText = TextView(this).apply {
-            text = "00:00"
-            textSize = 12f
+            text = "0:00"
+            textSize = 14f
             setTextColor(Color.WHITE)
         }
 
+        val timeSpacer = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+        }
+
+        totalTimeText = TextView(this).apply {
+            text = "0:00"
+            textSize = 14f
+            setTextColor(Color.WHITE)
+        }
+
+        timeRow.addView(currentTimeText)
+        timeRow.addView(timeSpacer)
+        timeRow.addView(totalTimeText)
+
         playerSeekBar = SeekBar(this).apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(8)
-                marginEnd = dp(8)
-            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            styleSeekBarVlc(this)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
                     if (fromUser) {
@@ -496,16 +680,6 @@ class MainActivity : AppCompatActivity() {
             })
         }
 
-        totalTimeText = TextView(this).apply {
-            text = "00:00"
-            textSize = 12f
-            setTextColor(Color.WHITE)
-        }
-
-        timeRow.addView(currentTimeText)
-        timeRow.addView(playerSeekBar)
-        timeRow.addView(totalTimeText)
-
         val actionsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -513,27 +687,29 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(8)
+                topMargin = dp(12)
             }
         }
 
         trackInfoBtn = ImageButton(this).apply {
-            setImageResource(android.R.drawable.ic_menu_sort_alphabetically)
-            setColorFilter(Color.WHITE)
+            setImageDrawable(makeVlcIconDrawable("track", Color.WHITE))
+            contentDescription = "Audio Track"
+            background = null
             setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
             setOnClickListener { cycleAudioTrack() }
         }
 
         repeatToggleBtn = ImageButton(this).apply {
-            setImageResource(android.R.drawable.ic_menu_rotate)
-            setColorFilter(Color.WHITE)
+            setImageDrawable(makeVlcIconDrawable("repeat", Color.WHITE))
+            contentDescription = "Repeat Mode"
+            background = null
             setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
             setOnClickListener {
                 repeatEnabled = !repeatEnabled
-                repeatToggleBtn.setColorFilter(
-                    if (repeatEnabled) Color.parseColor("#FF8800") else Color.WHITE
+                repeatToggleBtn.setImageDrawable(
+                    makeVlcIconDrawable("repeat", if (repeatEnabled) Color.parseColor("#FF8800") else Color.WHITE)
                 )
                 showHud(if (repeatEnabled) "Repeat ON" else "Repeat OFF", "")
             }
@@ -544,21 +720,18 @@ class MainActivity : AppCompatActivity() {
         }
 
         playPauseBtn = ImageButton(this).apply {
-            setImageResource(android.R.drawable.ic_media_pause)
-            setColorFilter(Color.WHITE)
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setStroke(dp(2), Color.WHITE)
-                setColor(Color.parseColor("#66000000"))
-            }
-            layoutParams = LinearLayout.LayoutParams(dp(50), dp(50))
+            setImageDrawable(makeVlcIconDrawable("pause", Color.WHITE))
+            contentDescription = "Play or Pause"
+            background = null
+            setBackgroundColor(Color.TRANSPARENT)
+            layoutParams = LinearLayout.LayoutParams(dp(56), dp(56))
             setOnClickListener {
                 if (videoView.isPlaying) {
                     videoView.pause()
-                    playPauseBtn.setImageResource(android.R.drawable.ic_media_play)
+                    setImageDrawable(makeVlcIconDrawable("play", Color.WHITE))
                 } else {
                     videoView.start()
-                    playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
+                    setImageDrawable(makeVlcIconDrawable("pause", Color.WHITE))
                 }
             }
         }
@@ -568,18 +741,20 @@ class MainActivity : AppCompatActivity() {
         }
 
         aspectRatioBtn = ImageButton(this).apply {
-            setImageResource(android.R.drawable.ic_menu_crop)
-            setColorFilter(Color.WHITE)
+            setImageDrawable(makeVlcIconDrawable("ratio", Color.WHITE))
+            contentDescription = "Aspect Ratio"
+            background = null
             setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
             setOnClickListener { cycleAspectRatio() }
         }
 
         moreOptionsBtn = ImageButton(this).apply {
-            setImageResource(android.R.drawable.ic_menu_more)
-            setColorFilter(Color.WHITE)
+            setImageDrawable(makeVlcIconDrawable("more", Color.WHITE))
+            contentDescription = "More Options"
+            background = null
             setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
             setOnClickListener { showPlayerMoreDialog() }
         }
 
@@ -592,6 +767,7 @@ class MainActivity : AppCompatActivity() {
         actionsRow.addView(moreOptionsBtn)
 
         playerBottomControls.addView(timeRow)
+        playerBottomControls.addView(playerSeekBar)
         playerBottomControls.addView(actionsRow)
 
         videoView.setOnCompletionListener {
@@ -643,8 +819,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         videoView.layoutParams = params
-        aspectRatioBtn.setColorFilter(
-            if (mode == "Fit") Color.WHITE else Color.parseColor("#FF8800")
+        aspectRatioBtn.setImageDrawable(
+            makeVlcIconDrawable("ratio", if (mode == "Fit") Color.WHITE else Color.parseColor("#FF8800"))
         )
     }
 
@@ -746,7 +922,7 @@ class MainActivity : AppCompatActivity() {
         updateSystemUiForPlayer()
         playerOverlay.visibility = View.VISIBLE
         playerTitleText.text = item.title
-        playPauseBtn.setImageResource(android.R.drawable.ic_media_pause)
+        playPauseBtn.setImageDrawable(makeVlcIconDrawable("pause", Color.WHITE))
         applyAspectRatio()
 
         videoView.setVideoURI(item.uri)
