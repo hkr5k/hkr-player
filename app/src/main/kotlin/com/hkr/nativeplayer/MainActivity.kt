@@ -296,6 +296,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun primaryTextColor(): Int =
+        if (isDarkMode) Color.WHITE else Color.parseColor("#111111")
+
+    private fun secondaryTextColor(): Int =
+        if (isDarkMode) Color.parseColor("#A1A1AA") else Color.parseColor("#52525B")
+
     private fun buildOnboardingView(): LinearLayout {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -547,30 +553,28 @@ class MainActivity : AppCompatActivity() {
                 val t = TextView(this@MainActivity).apply {
                     text = title
                     textSize = 15f
-                    setTextColor(if (isDarkMode) Color.WHITE else Color.parseColor("#111111"))
+                    setTextColor(primaryTextColor())
                 }
                 val s = TextView(this@MainActivity).apply {
                     text = subtitle
                     textSize = 12f
-                    setTextColor(if (isDarkMode) Color.parseColor("#A1A1AA") else Color.parseColor("#52525B"))
+                    setTextColor(secondaryTextColor())
                 }
                 addView(t)
                 addView(s)
             }
 
         container.addView(sectionTitle("Interface & Media"))
+        val themeLabel = if (isDarkMode) "Theme: Dark Mode" else "Theme: Light Mode"
         container.addView(settingRow(
-            "Theme: ${if (isDarkMode) "Dark Mode" else "Light Mode"}",
+            themeLabel,
             "Tap karke Dark aur Light mode badlein"
         ) {
             isDarkMode = !isDarkMode
             prefs.edit().putBoolean("dark_mode", isDarkMode).apply()
             applyTheme()
-            settingsScroll.removeAllViews()
-            settingsScroll.addView(buildSettingsView().getChildAt(0))
+            reloadSettingsContent()
         })
 
         val autoScanCheck = CheckBox(this).apply {
-            text = "Auto rescan media on startup"
-            isChecked = autoScanEnabled
-            setTextColor(if (isDarkMode) Color.WHITE 
+            text = "Auto rescan media o
