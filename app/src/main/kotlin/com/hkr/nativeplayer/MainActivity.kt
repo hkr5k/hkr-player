@@ -16,7 +16,6 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.LruCache
@@ -103,6 +102,11 @@ class MainActivity : AppCompatActivity() {
     private val thumbCache = LruCache<String, Bitmap>(140)
     private val thumbExecutor = Executors.newFixedThreadPool(3)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val hideSkipRunnable = Runnable {
+        if (::skipHudText.isInitialized) {
+            skipHudText.visibility = View.GONE
+        }
+    }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -569,6 +573,4 @@ class MainActivity : AppCompatActivity() {
         val autoScanCheck = CheckBox(this).apply {
             text = "Auto rescan media on startup"
             isChecked = autoScanEnabled
-            setTextColor(if (isDarkMode) Color.WHITE else Color.parseColor("#111111"))
-            setOnCheckedChangeListener { _, checked ->
-                autoScanEnabled =
+            setTextColor(if (isDarkMode) Color.WHITE 
