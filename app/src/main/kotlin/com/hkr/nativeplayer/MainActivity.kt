@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.media.MediaMetadataRetriever
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -14,7 +15,9 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.util.LruCache
+import android.view.GestureDetector
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -40,17 +43,26 @@ data class VideoItem(
 
 class MainActivity : AppCompatActivity() {
 
+    private lateinit var rootLayout: LinearLayout
+    private lateinit var topBar: LinearLayout
     private lateinit var playerBox: FrameLayout
     private lateinit var videoView: VideoView
+    private lateinit var skipIndicatorText: TextView
     private lateinit var backToAlbumsBtn: Button
+    private lateinit var audioTrackBtn: Button
+    private lateinit var themeToggleBtn: Button
     private lateinit var headerTitleText: TextView
     private lateinit var gridRecyclerView: RecyclerView
+
     private var mediaController: MediaController? = null
+    private var mediaPlayerRef: MediaPlayer? = null
 
     private val albumsMap = linkedMapOf<String, MutableList<VideoItem>>()
     private var inAlbumGrid: Boolean = false
     private var currentAlbum: String = "All Videos"
     private var currentIndex: Int = -1
+    private var isDarkMode: Boolean = true
+    private var currentAudioTrackIndex: Int = 0
 
     private val thumbCache = LruCache<String, Bitmap>(120)
     private val thumbExecutor = Executors.newFixedThreadPool(3)
@@ -69,15 +81,14 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val root = LinearLayout(this).apply {
+        rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#111111"))
         }
 
         playerBox = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(210)
+                dp(215)
             )
             setBackgroundColor(Color.BLACK)
             visibility = View.GONE
@@ -90,43 +101,90 @@ class MainActivity : AppCompatActivity() {
                 Gravity.CENTER
             )
         }
-        playerBox.addView(videoView)
 
-        val topBar = LinearLayout(this).apply {
+        skipIndicatorText = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#B3000000"))
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            visibility = View.GONE
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        }
+
+        val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                val halfWidth = playerBox.width / 2f
+                if (e.x >= halfWidth) {
+                    seekBy(10_000)
+                } else {
+                    seekBy(-10_000)
+                }
+                return true
+            }
+        })
+
+        playerBox.setOnTouchListener { _, event ->
+            gestureDetector.onTouchEvent(event)
+            false
+        }
+
+        playerBox.addView(videoView)
+        playerBox.addView(skipIndicatorText)
+
+        topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(Color.parseColor("#1C1C1E"))
-            setPadding(dp(10), dp(10), dp(10), dp(10))
+            setPadding(dp(8), dp(8), dp(8), dp(8))
         }
 
         backToAlbumsBtn = Button(this).apply {
             text = "‹ Albums"
-            textSize = 13f
+            textSize = 12f
             setAllCaps(false)
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#2C2C2E"))
             visibility = View.GONE
-            setOnClickListener {
-                showAlbumsGrid()
-            }
+            setOnClickListener { showAlbumsGrid() }
         }
 
         headerTitleText = TextView(this).apply {
             text = "Albums"
-            textSize = 18f
-            setTextColor(Color.WHITE)
+            textSize = 17f
             maxLines = 1
             layoutParams = LinearLayout.LayoutParams(
                 0,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 1f
             ).apply {
-                marginStart = dp(10)
+                marginStart = dp(8)
+                marginEnd = dp(6)
+            }
+        }
+
+        audioTrackBtn = Button(this).apply {
+            text = "Audio 1"
+            textSize = 11f
+            setAllCaps(false)
+            visibility = View.GONE
+            setOnClickListener { cycleAudioTrack() }
+        }
+
+        themeToggleBtn = Button(this).apply {
+            text = "Light"
+            textSize = 11f
+            setAllCaps(false)
+            setOnClickListener {
+                isDarkMode = !isDarkMode
+                applyTheme()
             }
         }
 
         topBar.addView(backToAlbumsBtn)
         topBar.addView(headerTitleText)
+        topBar.addView(audioTrackBtn)
+        topBar.addView(themeToggleBtn)
 
         gridRecyclerView = RecyclerView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
@@ -138,10 +196,10 @@ class MainActivity : AppCompatActivity() {
             clipToPadding = false
         }
 
-        root.addView(playerBox)
-        root.addView(topBar)
-        root.addView(gridRecyclerView)
-        setContentView(root)
+        rootLayout.addView(playerBox)
+        rootLayout.addView(topBar)
+        rootLayout.addView(gridRecyclerView)
+        setContentView(rootLayout)
 
         val controller = MediaController(this)
         controller.setAnchorView(videoView)
@@ -156,7 +214,65 @@ class MainActivity : AppCompatActivity() {
             playNextEpisode()
         }
 
+        applyTheme()
         checkPermissionAndLoad()
+    }
+
+    private fun applyTheme() {
+        val bgMain = if (isDarkMode) Color.parseColor("#111111") else Color.parseColor("#FFFFFF")
+        val bgBar = if (isDarkMode) Color.parseColor("#1C1C1E") else Color.parseColor("#F2F2F7")
+        val textMain = if (isDarkMode) Color.WHITE else Color.parseColor("#111111")
+        val btnBg = if (isDarkMode) Color.parseColor("#2C2C2E") else Color.parseColor("#E5E5EA")
+
+        rootLayout.setBackgroundColor(bgMain)
+        topBar.setBackgroundColor(bgBar)
+        headerTitleText.setTextColor(textMain)
+
+        for (btn in listOf(backToAlbumsBtn, audioTrackBtn, themeToggleBtn)) {
+            btn.setBackgroundColor(btnBg)
+            btn.setTextColor(textMain)
+        }
+        themeToggleBtn.text = if (isDarkMode) "Light" else "Dark"
+
+        if (inAlbumGrid) {
+            openAlbum(currentAlbum)
+        } else if (albumsMap.isNotEmpty()) {
+            showAlbumsGrid()
+        }
+    }
+
+    private fun seekBy(deltaMs: Int) {
+        if (!videoView.canSeekForward() && deltaMs > 0) return
+        val target = (videoView.currentPosition + deltaMs).coerceIn(0, videoView.duration.coerceAtLeast(0))
+        videoView.seekTo(target)
+        skipIndicatorText.text = if (deltaMs > 0) "+10s ⏭" else "⏮ -10s"
+        skipIndicatorText.visibility = View.VISIBLE
+        mainHandler.removeCallbacksAndMessages("skip_hide")
+        mainHandler.postAtTime({ skipIndicatorText.visibility = View.GONE }, "skip_hide", android.os.SystemClock.uptimeMillis() + 700)
+    }
+
+    private fun cycleAudioTrack() {
+        val mp = mediaPlayerRef ?: return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN) return
+        val tracks = mp.trackInfo ?: return
+        val audioIndices = tracks.mapIndexedNotNull { idx, info ->
+            if (info.trackType == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO) idx else null
+        }
+        if (audioIndices.size <= 1) {
+            skipIndicatorText.text = "Single Audio Track"
+            skipIndicatorText.visibility = View.VISIBLE
+            mainHandler.postDelayed({ skipIndicatorText.visibility = View.GONE }, 900)
+            return
+        }
+        currentAudioTrackIndex = (currentAudioTrackIndex + 1) % audioIndices.size
+        val selectedTrackIdx = audioIndices[currentAudioTrackIndex]
+        mp.selectTrack(selectedTrackIdx)
+        val lang = tracks[selectedTrackIdx].language?.uppercase().orEmpty()
+        val label = if (lang.isNotBlank()) "Audio: $lang" else "Audio ${currentAudioTrackIndex + 1}/${audioIndices.size}"
+        audioTrackBtn.text = label
+        skipIndicatorText.text = label
+        skipIndicatorText.visibility = View.VISIBLE
+        mainHandler.postDelayed({ skipIndicatorText.visibility = View.GONE }, 1000)
     }
 
     override fun onPause() {
@@ -280,12 +396,17 @@ class MainActivity : AppCompatActivity() {
         val list = albumsMap[currentAlbum] ?: return
         if (index !in list.indices) return
         currentIndex = index
+        currentAudioTrackIndex = 0
         val item = list[index]
 
         playerBox.visibility = View.VISIBLE
+        audioTrackBtn.visibility = View.VISIBLE
+        audioTrackBtn.text = "Audio"
         headerTitleText.text = item.title
+
         videoView.setVideoURI(item.uri)
         videoView.setOnPreparedListener { mp ->
+            mediaPlayerRef = mp
             mp.start()
             mediaController?.show(4000)
         }
@@ -396,7 +517,7 @@ class MainActivity : AppCompatActivity() {
             val tView = TextView(parent.context).apply {
                 id = 102
                 textSize = 14f
-                setTextColor(Color.WHITE)
+                setTextColor(if (isDarkMode) Color.WHITE else Color.parseColor("#111111"))
                 maxLines = 1
                 setPadding(0, dp(6), 0, 0)
             }
@@ -404,7 +525,7 @@ class MainActivity : AppCompatActivity() {
             val cView = TextView(parent.context).apply {
                 id = 103
                 textSize = 12f
-                setTextColor(Color.parseColor("#9E9EA4"))
+                setTextColor(if (isDarkMode) Color.parseColor("#9E9EA4") else Color.parseColor("#66666E"))
             }
 
             box.addView(img)
@@ -452,54 +573,4 @@ class MainActivity : AppCompatActivity() {
             val img = ImageView(parent.context).apply {
                 id = 201
                 scaleType = ImageView.ScaleType.CENTER_CROP
-                setBackgroundColor(Color.parseColor("#242426"))
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-            }
-
-            val activeBorder = View(parent.context).apply {
-                id = 203
-                background = GradientDrawable().apply {
-                    setStroke(dp(3), Color.parseColor("#FF8800"))
-                }
-                visibility = View.GONE
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-            }
-
-            val dur = TextView(parent.context).apply {
-                id = 202
-                textSize = 11f
-                setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#88000000"))
-                setPadding(dp(4), dp(1), dp(4), dp(1))
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.BOTTOM or Gravity.START
-                ).apply {
-                    setMargins(dp(4), dp(4), dp(4), dp(4))
-                }
-            }
-
-            frame.addView(img)
-            frame.addView(activeBorder)
-            frame.addView(dur)
-            return VH(frame)
-        }
-
-        override fun onBindViewHolder(holder: VH, position: Int) {
-            val item = items[position]
-            holder.durationText.text = formatDuration(item.durationMs)
-            holder.overlay.visibility = if (position == playingIndex) View.VISIBLE else View.GONE
-            loadThumbnail(item, holder.thumb)
-            holder.itemView.setOnClickListener { onClick(position) }
-        }
-
-        override fun getItemCount(): Int = items.size
-    }
-}
+         
