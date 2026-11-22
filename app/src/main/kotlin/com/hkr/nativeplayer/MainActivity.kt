@@ -396,7 +396,7 @@ class MainActivity : AppCompatActivity() {
             private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = tintColor
                 style = Paint.Style.STROKE
-                strokeWidth = dp(2.2f).toFloat()
+                strokeWidth = dpF(2.2f)
                 strokeCap = Paint.Cap.ROUND
                 strokeJoin = Paint.Join.ROUND
             }
@@ -414,7 +414,7 @@ class MainActivity : AppCompatActivity() {
                         val h = dp(17).toFloat()
                         val l = cx - w / 2f
                         val t = cy - h / 2f
-                        canvas.drawRoundRect(l, t, l + w, t + h, dp(3f).toFloat(), dp(3f).toFloat(), strokePaint)
+                        canvas.drawRoundRect(l, t, l + w, t + h, dpF(3f), dpF(3f), strokePaint)
                         canvas.drawLine(l + dp(4), t + dp(9), l + dp(11), t + dp(9), strokePaint)
                         canvas.drawLine(l + dp(14), t + dp(9), l + w - dp(4), t + dp(9), strokePaint)
                         canvas.drawLine(l + dp(4), t + dp(13), l + dp(15), t + dp(13), strokePaint)
@@ -433,19 +433,19 @@ class MainActivity : AppCompatActivity() {
                     "pause" -> {
                         val rad = dp(23).toFloat()
                         canvas.drawCircle(cx, cy, rad, strokePaint)
-                        val barW = dp(3.5f).toFloat()
+                        val barW = dpF(3.5f)
                         val barH = dp(15).toFloat()
                         canvas.drawRect(
-                            cx - dp(6.5f).toFloat(),
+                            cx - dpF(6.5f),
                             cy - barH / 2f,
-                            cx - dp(6.5f).toFloat() + barW,
+                            cx - dpF(6.5f) + barW,
                             cy + barH / 2f,
                             fillPaint
                         )
                         canvas.drawRect(
-                            cx + dp(3f).toFloat(),
+                            cx + dpF(3f),
                             cy - barH / 2f,
-                            cx + dp(3f).toFloat() + barW,
+                            cx + dpF(3f) + barW,
                             cy + barH / 2f,
                             fillPaint
                         )
@@ -454,9 +454,9 @@ class MainActivity : AppCompatActivity() {
                         val rad = dp(23).toFloat()
                         canvas.drawCircle(cx, cy, rad, strokePaint)
                         val path = Path().apply {
-                            moveTo(cx - dp(5).toFloat(), cy - dp(8).toFloat())
-                            lineTo(cx + dp(9).toFloat(), cy)
-                            lineTo(cx - dp(5).toFloat(), cy + dp(8).toFloat())
+                            moveTo(cx - dpF(5f), cy - dpF(8f))
+                            lineTo(cx + dpF(9f), cy)
+                            lineTo(cx - dpF(5f), cy + dpF(8f))
                             close()
                         }
                         canvas.drawPath(path, fillPaint)
@@ -468,7 +468,7 @@ class MainActivity : AppCompatActivity() {
                         val t = cy - h / 2f
                         val r = l + w
                         val b = t + h
-                        val c = dp(5).toFloat()
+                        val c = dpF(5f)
                         canvas.drawLine(l, t + c, l, t, strokePaint)
                         canvas.drawLine(l, t, l + c, t, strokePaint)
                         canvas.drawLine(r - c, t, r, t, strokePaint)
@@ -479,8 +479,8 @@ class MainActivity : AppCompatActivity() {
                         canvas.drawLine(r, b, r, b - c, strokePaint)
                     }
                     "more" -> {
-                        val dotR = dp(2.2f).toFloat()
-                        val gap = dp(7).toFloat()
+                        val dotR = dpF(2.2f)
+                        val gap = dpF(7f)
                         canvas.drawCircle(cx - gap, cy, dotR, fillPaint)
                         canvas.drawCircle(cx, cy, dotR, fillPaint)
                         canvas.drawCircle(cx + gap, cy, dotR, fillPaint)
@@ -949,6 +949,7 @@ class MainActivity : AppCompatActivity() {
         renderCurrentTab()
     }
 
+    @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (isPlayerVisible) {
             closePlayerOverlay()
@@ -1755,6 +1756,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun dpF(value: Float): Float = value * resources.displayMetrics.density
 
     inner class MediaGridAdapter(
         private val items: List<MediaEntry>,
