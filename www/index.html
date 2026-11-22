@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HKR Player</title>
+  <style>
+    * { box-sizing: border-box; font-family: sans-serif; }
+    body { margin: 0; background: #121212; color: #fff; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    h2 { margin: 0; color: #ff8800; }
+    video { width: 100%; max-height: 55vh; background: #000; border-radius: 10px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    button, label.btn { background: #2e2e2e; color: #fff; border: none; padding: 10px 14px; border-radius: 8px; }
+    .primary { background: #ff8800; color: #000; font-weight: bold; }
+    input[type="file"] { display: none; }
+    input[type="text"] { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #444; background: #141414; color: #fff; }
+  </style>
+</head>
+<body>
+  <h2>HKR Player</h2>
+  <video id="video" controls playsinline></video>
+  <div class="row">
+    <label class="btn primary" for="fileInput">Choose Video</label>
+    <input type="file" id="fileInput" accept="video/*" />
+    <button id="playBtn">Play / Pause</button>
+    <button id="speedBtn">1x</button>
+  </div>
+  <div class="row">
+    <input type="text" id="urlInput" placeholder="Paste MP4 URL..." />
+    <button id="loadBtn" class="primary">Load</button>
+  </div>
+  <script>
+    const video = document.getElementById("video");
+    const fileInput = document.getElementById("fileInput");
+    const playBtn = document.getElementById("playBtn");
+    const speedBtn = document.getElementById("speedBtn");
+    const urlInput = document.getElementById("urlInput");
+    const loadBtn = document.getElementById("loadBtn");
+    const speeds = [1, 1.25, 1.5, 2, 0.75];
+    let idx = 0;
+
+    fileInput.addEventListener("change", (e) => {
+      if (e.target.files[0]) {
+        video.src = URL.createObjectURL(e.target.files[0]);
+        video.play();
+      }
+    });
+    loadBtn.addEventListener("click", () => {
+      if (urlInput.value.trim()) {
+        video.src = urlInput.value.trim();
+        video.play();
+      }
+    });
+    playBtn.addEventListener("click", () => video.paused ? video.play() : video.pause());
+    speedBtn.addEventListener("click", () => {
+      idx = (idx + 1) % speeds.length;
+      video.playbackRate = speeds[idx];
+      speedBtn.textContent = speeds[idx] + "x";
+    });
+  </script>
+</body>
+</html>
